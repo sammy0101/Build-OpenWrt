@@ -1,0 +1,110 @@
+name: Build Latest OpenWrt and Release
+
+on:
+  workflow_dispatch: # 允許在 Actions 頁面手動點擊按鈕觸發編譯
+
+# 必須開啟寫入權限，GitHub Actions 才有權限自動建立 Release
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build OpenWrt
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Initialize environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install build-essential clang flex bison g++ gawk \
+        gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+        python3-distutils rsync unzip zlib1g-dev file wget qemu-utils
+        sudo apt-get -y autoremove --purge
+        sudo apt-get clean
+
+    - name: Clone OpenWrt source (Latest Master)
+      run: |
+        # 直接克隆官方預設主分支，獲取最新鮮的原始碼
+        git clone https://github.com/openwrt/openwrt.git openwrt
+
+    - name: Update and install feeds
+      working-directory: ./openwrt
+      run: |
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Generate default configuration (x86_64 + VMDK)
+      working-directory: ./openwrt
+      run: |
+        rm -f .config
+        touch .config
+        # 設定為常見的 PC/軟路由 x86_64 平台
+        echo "CONFIG_TARGET_x86=y" >> .config
+        echo "CONFIG_TARGET_x86_64=y" >> .config
+        echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
+        
+        # 確保生成 EXT4 和 SQUASHFS 格式的映像檔 (.img)
+        echo "CONFIG_TARGET_ROOTFS_EXT4=y" >> .config
+        echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
+        
+        # 開啟生成 VMware 虛擬機鏡像檔案格式 (.vmdk)
+        echo "CONFIG_VMDK_IMAGES=y" >> .config
+        
+        # 自動擴充套用預設設定
+        make defconfig
+
+    - name: Download package sources
+      working-directory: ./openwrt
+      run: |
+        make download -j8
+
+    - name: Compile the firmware
+      working-directory: ./openwrt
+      run: |
+        echo "開始使用 $(nproc) 個執行緒進行編譯..."
+        # 優先使用多執行緒編譯，若失敗則退回單執行緒並輸出詳細錯誤日誌
+        make -j$(nproc) || make -j1 V=s
+
+    - name: Prepare firmware files (.img and .vmdk)
+      run: |
+        cd openwrt/bin/targets/x86/64/
+        # OpenWrt 預設會將編譯好的檔案壓縮成 .img.gz 或 .vmdk.gz
+        # 這裡我們自動將其解壓縮，確保 Release 中直接提供 .img 與 .vmdk 檔案
+        echo "正在解壓縮韌體檔案..."
+        gzip -d *.gz || true
+
+    - name: Generate Version and Release Tag
+      id: tag
+      run: |
+        cd openwrt
+        # 取得最新源碼的 Commit Hash 前 7 碼作為辨識
+        COMMIT_HASH=$(git rev-parse --short HEAD)
+        # 以 當前日期 + Commit Hash 組成版本號，例如: SNAPSHOT-20240101-a1b2c3d
+        VERSION="SNAPSHOT-$(date +"%Y%m%d")-${COMMIT_HASH}"
+        
+        # 寫入環境變數供下一步驟使用
+        echo "RELEASE_NAME=OpenWRT+${VERSION}" >> $GITHUB_ENV
+        echo "RELEASE_TAG=${VERSION}" >> $GITHUB_ENV
+
+    - name: Upload firmware to GitHub Releases
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ env.RELEASE_TAG }}
+        name: ${{ env.RELEASE_NAME }}
+        # 自動將 x86_64 目錄下的所有解壓後的產物 (.img, .vmdk, manifest 等) 上傳到 Releases
+        files: openwrt/bin/targets/x86/64/*
+        body: |
+          ### 最新原版 OpenWrt (x86_64) 自動編譯發布
+          
+          * **版本名稱**: ${{ env.RELEASE_NAME }}
+          * **源碼分支**: master (Snapshot)
+          * **包含格式**: `.img` (實體機/軟路由用) 以及 `.vmdk` (VMware/虛擬機用)
+          * 此 Release 由 GitHub Actions 自動編譯並發布。
+      env:
+        # 使用 GitHub 預設提供的 Token 來進行授權發布
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
