@@ -106,7 +106,8 @@ jobs:
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
         
         # 5. 若下拉選單選擇 yes，則加入 Docker 相關核心與 LuCI 介面
-        if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+        # 【修正重點】：這裡的 if 後面已經補上了空格 (if [ ... ])
+        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
@@ -114,6 +115,7 @@ jobs:
         fi
 
         # 6. 若下拉選單選擇 yes，則加入 5 大常用實用外掛與中文包
+        # 【修正重點】：這裡的 if 後面也確認有空格 (if [ ... ])
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
