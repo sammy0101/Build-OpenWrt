@@ -1,7 +1,23 @@
-name: Build Latest Stable OpenWrt and Release
+name: Build Custom OpenWrt and Release
 
 on:
-  workflow_dispatch: # 允許在 Actions 頁面手動點擊按鈕觸發編譯
+  workflow_dispatch:
+    inputs:
+      router_ip:
+        description: '請設置路由器的管理地址 (格式:192.168.x.1 或 10.x.x.1)'
+        required: true
+        default: '192.168.10.1'
+        type: string
+      firmware_size:
+        description: '請輸入要編譯的韌體大小 單位(MB)'
+        required: true
+        default: '2048'
+        type: string
+      include_docker:
+        description: '是否編譯 Docker 與圖形化管理套件？'
+        required: true
+        default: true
+        type: boolean
 
 # 必須開啟寫入權限，GitHub Actions 才有權限自動建立 Release
 permissions:
@@ -29,20 +45,22 @@ jobs:
 
     - name: Auto-detect and Clone Latest Stable OpenWrt
       run: |
-        # 1. 使用 git 自動抓取官方所有標籤 (Tags)
-        # 2. 透過正則表達式過濾出純數字正式版 (例如 v24.10.5)，排除所有 -rc 測試版
-        # 3. 使用 sort -V 排序並取出最新的一個
+        # 自動偵測最新正式版 (例如 v24.10.5)
         LATEST_TAG=$(git ls-remote --tags https://github.com/openwrt/openwrt.git | awk -F/ '{print $3}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
         
         echo "=========================================="
         echo "偵測到目前最新的官方穩定版為: $LATEST_TAG"
         echo "=========================================="
         
-        # 直接使用偵測到的最新標籤進行克隆 (加入 --depth 1 加快下載速度)
         git clone -b $LATEST_TAG --depth 1 https://github.com/openwrt/openwrt.git openwrt
-        
-        # 將獲取到的版本號寫入環境變數，供後續命名使用
         echo "OPENWRT_TAG=$LATEST_TAG" >> $GITHUB_ENV
+
+    - name: Apply Custom Settings (IP)
+      working-directory: ./openwrt
+      run: |
+        # 替換預設 IP
+        sed -i "s/192.168.1.1/${{ github.event.inputs.router_ip }}/g" package/base-files/files/bin/config_generate
+        echo "已將預設 IP 修改為: ${{ github.event.inputs.router_ip }}"
 
     - name: Update and install feeds
       working-directory: ./openwrt
@@ -50,24 +68,40 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Generate default configuration (x86_64 + VMDK)
+    - name: Generate default configuration (x86_64 + Custom features)
       working-directory: ./openwrt
       run: |
         rm -f .config
         touch .config
-        # 設定為常見的 PC/軟路由 x86_64 平台
+        
+        # 1. 基礎平台設定
         echo "CONFIG_TARGET_x86=y" >> .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # 確保生成 EXT4 和 SQUASHFS 格式的映像檔
+        # 2. 映像檔格式設定
         echo "CONFIG_TARGET_ROOTFS_EXT4=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
-        
-        # 開啟生成 VMware 虛擬機鏡像檔案格式 (.vmdk)
         echo "CONFIG_VMDK_IMAGES=y" >> .config
         
-        # 自動擴充套用預設設定
+        # 3. 磁碟空間 (讀取表單填寫的 MB 數)
+        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
+        
+        # 4. 內建 LuCI 網頁管理與中文、線上更新
+        echo "CONFIG_PACKAGE_luci=y" >> .config
+        echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
+        echo "CONFIG_PACKAGE_luci-i18n-base-zh-tw=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
+        echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
+        
+        # 5. 若勾選 Docker，則加入相關核心與 LuCI 介面
+        if [ "${{ github.event.inputs.include_docker }}" = "true" ]; then
+          echo "CONFIG_PACKAGE_docker=y" >> .config
+          echo "CONFIG_PACKAGE_dockerd=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-tw=y" >> .config
+        fi
+        
         make defconfig
 
     - name: Download package sources
@@ -79,33 +113,25 @@ jobs:
       working-directory: ./openwrt
       run: |
         echo "開始使用 $(nproc) 個執行緒進行編譯..."
-        # 優先使用多執行緒編譯，若失敗則退回單執行緒並輸出詳細錯誤日誌
         make -j$(nproc) || make -j1 V=s
 
     - name: Prepare, Filter and Rename Firmware Files
       run: |
         cd openwrt/bin/targets/x86/64/
-        echo "解壓縮韌體..."
         gzip -d *.gz || true
-        
-        # 建立一個發布專用的資料夾
         mkdir -p release_files
         
-        # 1. 挑選完整且可開機的 combined 檔案 (包含 EFI/傳統 BIOS x Squashfs/EXT4 的 img 與 vmdk)
         cp *squashfs-combined*.img release_files/ 2>/dev/null || true
         cp *squashfs-combined*.vmdk release_files/ 2>/dev/null || true
         cp *ext4-combined*.img release_files/ 2>/dev/null || true
         cp *ext4-combined*.vmdk release_files/ 2>/dev/null || true
         
-        # 2. 保留重要說明檔案，並直接在檔名加上中文註解！
         cp config.buildinfo release_files/config_編譯功能套件清單.buildinfo 2>/dev/null || true
         cp feeds.buildinfo release_files/feeds_外部軟體源紀錄.buildinfo 2>/dev/null || true
         cp version.buildinfo release_files/version_內部編譯號.buildinfo 2>/dev/null || true
         cp profiles.json release_files/profiles_硬體支援說明.json 2>/dev/null || true
-        # 將驗證碼加上 .txt 副檔名，方便在 Windows/Mac 點擊直接以記事本打開
         cp sha256sums release_files/sha256sums_檔案驗證碼.txt 2>/dev/null || true
         
-        # .manifest 檔案名較長 (openwrt-x86-64-xxx.manifest)，使用迴圈為其加上中文後綴
         for f in *.manifest; do
           if [ -f "$f" ]; then
             cp "$f" "release_files/${f%.manifest}_預裝軟體清單.manifest"
@@ -115,11 +141,8 @@ jobs:
     - name: Generate Release Info
       run: |
         DATE_STR=$(date +"%Y%m%d")
-        
-        # 組合新的版本標題，格式如：OpenWRT+v24.10.5-20260301
         RELEASE_NAME="OpenWRT+${{ env.OPENWRT_TAG }}-${DATE_STR}"
         RELEASE_TAG="${{ env.OPENWRT_TAG }}-${DATE_STR}"
-        
         echo "RELEASE_NAME=${RELEASE_NAME}" >> $GITHUB_ENV
         echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
 
@@ -128,24 +151,25 @@ jobs:
       with:
         tag_name: ${{ env.RELEASE_TAG }}
         name: ${{ env.RELEASE_NAME }}
-        # 上傳我們精心過濾與重新命名好的檔案
         files: openwrt/bin/targets/x86/64/release_files/*
         body: |
-          ### OpenWrt (x86_64) 最新官方穩定版自動編譯
+          ### OpenWrt (x86_64) 自定義編譯發布
           
           * **版本名稱**: ${{ env.RELEASE_NAME }}
-          * **官方源碼版本**: ${{ env.OPENWRT_TAG }} (每次編譯自動獲取最新正式版)
+          * **官方源碼**: ${{ env.OPENWRT_TAG }} 
+          
+          #### 🔐 登入資訊 (請務必記住)：
+          * **登入網址 (IP)**: `http://${{ github.event.inputs.router_ip }}`
+          * **帳號 (AC)**: `root`
+          * **密碼 (PW)**: `無` *(初次登入預設為空，登入後請盡速設定密碼)*
+          
+          #### 🚀 你的專屬配置清單：
+          * **系統空間大小**: `${{ github.event.inputs.firmware_size }} MB`
+          * **Docker 容器支援**: `${{ github.event.inputs.include_docker == 'true' && '✅ 已包含 (可於網頁後台管理 Docker)' || '❌ 未包含' }}`
           
           #### 📥 韌體下載指南：
-          * **現代化迷你主機 / N100 / VMware 虛擬機**：請下載檔名包含 `efi` 的檔案。
-          * **老舊電腦 / 傳統 BIOS 主機**：請下載沒有 `efi` 的檔案。
-          * **強烈推薦的格式**：`squashfs` (支援在網頁後台一鍵「恢復原廠設定」)。
-          * **虛擬機直通**：直接下載 `.vmdk` 匯入免轉檔。
-          
-          #### 📄 附屬說明檔介紹 (已加上中文標籤)：
-          * `*_預裝軟體清單.manifest`：紀錄此韌體內建了哪些軟體。
-          * `config_編譯功能套件清單.buildinfo`：本次編譯詳細的 config 參數。
-          * `sha256sums_檔案驗證碼.txt`：用來核對下載的韌體檔案有沒有損壞。
-          * `feeds_外部軟體源紀錄` / `version_內部編譯號` / `profiles_硬體支援說明` 供進階除錯使用。
+          * **現代化主機 / VM 虛擬機**：下載含 `efi` 的檔案。
+          * **強烈推薦格式**：`squashfs` (支援後台一鍵恢復原廠設定)。
+          * **虛擬機直通**：直接下載 `.vmdk` 匯入。
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
