@@ -21,6 +21,14 @@ on:
         options:
           - 'yes'
           - 'no'
+      include_ext_apps:
+        description: '是否編譯常用實用外掛 (UPnP/網路共享/網頁終端/遠端喚醒/DDNS)？'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
 
 # 必須開啟寫入權限，GitHub Actions 才有權限自動建立 Release
 permissions:
@@ -98,11 +106,30 @@ jobs:
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
         
         # 5. 若下拉選單選擇 yes，則加入 Docker 相關核心與 LuCI 介面
-        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+        if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-tw=y" >> .config
+        fi
+
+        # 6. 若下拉選單選擇 yes，則加入 5 大常用實用外掛與中文包
+        if[ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+          # UPnP 自動連接埠映射
+          echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
+          # Samba4 網路芳鄰資料夾共享
+          echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-samba4-zh-tw=y" >> .config
+          # TTYD 網頁終端機
+          echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-tw=y" >> .config
+          # WOL 網路遠端喚醒
+          echo "CONFIG_PACKAGE_luci-app-wol=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-wol-zh-tw=y" >> .config
+          # DDNS 動態域名
+          echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-tw=y" >> .config
         fi
         
         make defconfig
@@ -136,7 +163,7 @@ jobs:
         cp sha256sums release_files/sha256sums_檔案驗證碼.txt 2>/dev/null || true
         
         for f in *.manifest; do
-          if [ -f "$f" ]; then
+          if[ -f "$f" ]; then
             cp "$f" "release_files/${f%.manifest}_預裝軟體清單.manifest"
           fi
         done
@@ -169,6 +196,7 @@ jobs:
           #### 🚀 你的專屬配置清單：
           * **系統空間大小**: `${{ github.event.inputs.firmware_size }} MB`
           * **Docker 容器支援**: `${{ github.event.inputs.include_docker == 'yes' && '✅ 已包含 (可於網頁後台管理 Docker)' || '❌ 未包含' }}`
+          * **常用實用外掛**: `${{ github.event.inputs.include_ext_apps == 'yes' && '✅ 已包含 (UPnP/Samba/TTYD/WOL/DDNS)' || '❌ 未包含' }}`
           
           #### 📥 韌體下載指南：
           * **現代化主機 / VM 虛擬機**：下載含 `efi` 的檔案。
