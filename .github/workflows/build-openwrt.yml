@@ -114,20 +114,15 @@ jobs:
         fi
 
         # 6. 若下拉選單選擇 yes，則加入 5 大常用實用外掛與中文包
-        if[ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
-          # UPnP 自動連接埠映射
+        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
-          # Samba4 網路芳鄰資料夾共享
           echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-samba4-zh-tw=y" >> .config
-          # TTYD 網頁終端機
           echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-tw=y" >> .config
-          # WOL 網路遠端喚醒
           echo "CONFIG_PACKAGE_luci-app-wol=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-wol-zh-tw=y" >> .config
-          # DDNS 動態域名
           echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-tw=y" >> .config
         fi
@@ -148,13 +143,15 @@ jobs:
     - name: Prepare, Filter and Rename Firmware Files
       run: |
         cd openwrt/bin/targets/x86/64/
-        gzip -d *.gz || true
+        
+        # 移除原先的自動解壓縮 gzip -d，保留 .gz 壓縮檔以突破 GitHub 2GB 上傳限制
         mkdir -p release_files
         
-        cp *squashfs-combined*.img release_files/ 2>/dev/null || true
-        cp *squashfs-combined*.vmdk release_files/ 2>/dev/null || true
-        cp *ext4-combined*.img release_files/ 2>/dev/null || true
-        cp *ext4-combined*.vmdk release_files/ 2>/dev/null || true
+        # 直接挑選已壓縮的 .img.gz 與 .vmdk.gz 檔案
+        cp *squashfs-combined*.img.gz release_files/ 2>/dev/null || true
+        cp *squashfs-combined*.vmdk.gz release_files/ 2>/dev/null || true
+        cp *ext4-combined*.img.gz release_files/ 2>/dev/null || true
+        cp *ext4-combined*.vmdk.gz release_files/ 2>/dev/null || true
         
         cp config.buildinfo release_files/config_編譯功能套件清單.buildinfo 2>/dev/null || true
         cp feeds.buildinfo release_files/feeds_外部軟體源紀錄.buildinfo 2>/dev/null || true
@@ -163,7 +160,7 @@ jobs:
         cp sha256sums release_files/sha256sums_檔案驗證碼.txt 2>/dev/null || true
         
         for f in *.manifest; do
-          if[ -f "$f" ]; then
+          if [ -f "$f" ]; then
             cp "$f" "release_files/${f%.manifest}_預裝軟體清單.manifest"
           fi
         done
@@ -198,9 +195,10 @@ jobs:
           * **Docker 容器支援**: `${{ github.event.inputs.include_docker == 'yes' && '✅ 已包含 (可於網頁後台管理 Docker)' || '❌ 未包含' }}`
           * **常用實用外掛**: `${{ github.event.inputs.include_ext_apps == 'yes' && '✅ 已包含 (UPnP/Samba/TTYD/WOL/DDNS)' || '❌ 未包含' }}`
           
-          #### 📥 韌體下載指南：
-          * **現代化主機 / VM 虛擬機**：下載含 `efi` 的檔案。
+          #### 📥 韌體下載與使用指南：
+          * **下載說明**：為突破 GitHub 單檔 2GB 限制，檔案保留了官方的 `.gz` 壓縮格式。下載後請先**解壓縮** (Windows 推薦使用 7-Zip 或 WinRAR；Mac 直接雙擊)，即可獲得 `.img` 或 `.vmdk` 檔案。
+          * **現代化主機 / VM 虛擬機**：請下載含 `efi` 的檔案。
           * **強烈推薦格式**：`squashfs` (支援後台一鍵恢復原廠設定)。
-          * **虛擬機直通**：直接下載 `.vmdk` 匯入。
+          * **虛擬機直通**：直接下載 `.vmdk.gz` 檔案，解壓縮後匯入。
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
