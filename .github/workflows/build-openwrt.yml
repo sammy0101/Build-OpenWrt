@@ -106,6 +106,7 @@ jobs:
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
         
         # 5. 若下拉選單選擇 yes，則加入 Docker 相關核心與 LuCI 介面
+        # (已修復: if 和 [ 之間必須有空格)
         if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
@@ -114,7 +115,7 @@ jobs:
         fi
 
         # 6. 若下拉選單選擇 yes，則加入 5 大常用實用外掛與中文包
-        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+        if[ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
@@ -144,10 +145,10 @@ jobs:
       run: |
         cd openwrt/bin/targets/x86/64/
         
-        # 移除原先的自動解壓縮 gzip -d，保留 .gz 壓縮檔以突破 GitHub 2GB 上傳限制
+        # 建立發布用資料夾
         mkdir -p release_files
         
-        # 直接挑選已壓縮的 .img.gz 與 .vmdk.gz 檔案
+        # 挑選已壓縮的 .img.gz 與 .vmdk.gz 檔案 (避免超過 GitHub 2GB 限制)
         cp *squashfs-combined*.img.gz release_files/ 2>/dev/null || true
         cp *squashfs-combined*.vmdk.gz release_files/ 2>/dev/null || true
         cp *ext4-combined*.img.gz release_files/ 2>/dev/null || true
