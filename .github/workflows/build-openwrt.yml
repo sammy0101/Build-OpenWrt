@@ -105,7 +105,7 @@ jobs:
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
         
-        # 5. 若下拉選單選擇 yes，則加入 Docker 相關核心與 LuCI 介面 (空格已嚴格修正)
+        # 5. 若下拉選單選擇 yes，則加入 Docker 相關核心與 LuCI 介面
         if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
@@ -113,8 +113,8 @@ jobs:
           echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-tw=y" >> .config
         fi
 
-        # 6. 若下拉選單選擇 yes，則加入 5 大常用實用外掛與中文包 (空格已嚴格修正)
-        if[ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+        # 6. 若下拉選單選擇 yes，則加入 5 大常用實用外掛與中文包
+        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
@@ -159,7 +159,7 @@ jobs:
         cp sha256sums release_files/sha256sums_檔案驗證碼.txt 2>/dev/null || true
         
         for f in *.manifest; do
-          if[ -f "$f" ]; then
+          if [ -f "$f" ]; then
             cp "$f" "release_files/${f%.manifest}_預裝軟體清單.manifest"
           fi
         done
