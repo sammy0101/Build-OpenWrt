@@ -1,4 +1,4 @@
-name: Build Custom OpenWrt and Release
+name: Build Custom OpenWrt (All Formats + OpenClash)
 
 on:
   workflow_dispatch:
@@ -15,6 +15,14 @@ on:
         type: string
       include_docker:
         description: '是否編譯 Docker 與圖形化管理套件？'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      include_openclash:
+        description: '是否安裝 OpenClash (網路代理工具)？'
         required: true
         default: 'yes'
         type: choice
@@ -73,6 +81,19 @@ jobs:
         sed -i "s/192.168.1.1/${{ github.event.inputs.router_ip }}/g" package/base-files/files/bin/config_generate
         echo "已將預設 IP 修改為: ${{ github.event.inputs.router_ip }}"
 
+    - name: Download OpenClash Source
+      working-directory: ./openwrt
+      run: |
+        # 如果選擇了 Yes，就去下載 OpenClash 源碼
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+          echo "正在下載 OpenClash 源碼..."
+          # 建立一個暫存目錄
+          mkdir -p package/custom
+          # 進入目錄並 Clone
+          git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/custom/luci-app-openclash
+          echo "OpenClash 源碼下載完成"
+        fi
+
     - name: Update and install feeds
       working-directory: ./openwrt
       run: |
@@ -90,7 +111,7 @@ jobs:
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
         
-        # 2. 映像檔格式設定
+        # 2. 映像檔格式設定 (同時保留 EXT4 和 SquashFS)
         echo "CONFIG_TARGET_ROOTFS_EXT4=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
         echo "CONFIG_VMDK_IMAGES=y" >> .config
@@ -105,8 +126,7 @@ jobs:
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
         
-        # 5. 若下拉選單選擇 yes，則加入 Docker 相關核心與 LuCI 介面
-        # (已包含正確的空格語法)
+        # 5. 若選擇 Yes，則加入 Docker
         if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
@@ -114,8 +134,23 @@ jobs:
           echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-tw=y" >> .config
         fi
 
-        # 6. 若下拉選單選擇 yes，則加入 5 大常用實用外掛與中文包
-        # (已包含正確的空格語法)
+        # 6. 若選擇 Yes，則加入 OpenClash (包含依賴處理)
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+          echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-openclash-zh-tw=y" >> .config
+          
+          # 重要：OpenClash 需要 dnsmasq-full 才能正常運作
+          # 我們必須先移除預設的 dnsmasq，然後啟用 full 版本
+          echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
+          
+          # 確保其他依賴套件也被選中 (curl, bash, etc)
+          echo "CONFIG_PACKAGE_curl=y" >> .config
+          echo "CONFIG_PACKAGE_bash=y" >> .config
+          echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
+        fi
+
+        # 7. 若選擇 Yes，則加入常用外掛
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
@@ -142,21 +177,19 @@ jobs:
         echo "開始使用 $(nproc) 個執行緒進行編譯..."
         make -j$(nproc) || make -j1 V=s
 
-    - name: Prepare, Filter and Rename Firmware Files
+    - name: Prepare All Firmware Files
       run: |
         cd openwrt/bin/targets/x86/64/
         
-        # 1. 先全部解壓縮，方便我們手動轉換格式
-        echo "正在解壓縮所有映像檔以進行檢查..."
+        echo "正在解壓縮所有映像檔..."
         gzip -d *.gz || true
         
-        # 2. 強制生成 SquashFS 的 VMDK 檔 (如果編譯器沒有產出的話)
         echo "檢查並補齊缺失的 VMDK 檔案..."
-        for img in *squashfs-combined*.img; do
+        for img in *.img; do
           if [ -f "$img" ]; then
             vmdk=${img%.img}.vmdk
             if [ ! -f "$vmdk" ]; then
-              echo "發現缺失 VMDK，正在使用 qemu-img 手動轉換: $img -> $vmdk"
+              echo "發現 $img 缺少對應的 VMDK，正在使用 qemu-img 手動轉換..."
               qemu-img convert -f raw -O vmdk "$img" "$vmdk"
             fi
           fi
@@ -164,13 +197,9 @@ jobs:
         
         mkdir -p release_files
         
-        # 3. 挑選檔案 (此時應該要是解壓狀態的 .img 和 .vmdk)
-        cp *squashfs-combined*.img release_files/ 2>/dev/null || true
-        cp *squashfs-combined*.vmdk release_files/ 2>/dev/null || true
-        cp *ext4-combined*.img release_files/ 2>/dev/null || true
-        cp *ext4-combined*.vmdk release_files/ 2>/dev/null || true
+        cp *.img release_files/ 2>/dev/null || true
+        cp *.vmdk release_files/ 2>/dev/null || true
         
-        # 複製說明檔
         cp config.buildinfo release_files/config_編譯功能套件清單.buildinfo 2>/dev/null || true
         cp feeds.buildinfo release_files/feeds_外部軟體源紀錄.buildinfo 2>/dev/null || true
         cp version.buildinfo release_files/version_內部編譯號.buildinfo 2>/dev/null || true
@@ -183,16 +212,14 @@ jobs:
           fi
         done
         
-        # 4. 進入 release_files 資料夾，將大型映像檔重新壓縮成 .gz (符合 GitHub 2GB 限制)
         cd release_files
-        echo "正在重新壓縮韌體檔案..."
+        echo "正在壓縮檔案以符合 GitHub 限制..."
         gzip *.img
         gzip *.vmdk
-        echo "檔案準備完成！"
+        echo "打包完成！"
 
     - name: Generate Release Info
       run: |
-        # 加入小時與分鐘 (-%H%M)，確保每次編譯的版本號都是唯一的，避免重複上傳報錯
         DATE_STR=$(date +"%Y%m%d-%H%M")
         RELEASE_NAME="OpenWRT+${{ env.OPENWRT_TAG }}-${DATE_STR}"
         RELEASE_TAG="${{ env.OPENWRT_TAG }}-${DATE_STR}"
@@ -206,25 +233,22 @@ jobs:
         name: ${{ env.RELEASE_NAME }}
         files: openwrt/bin/targets/x86/64/release_files/*
         body: |
-          ### OpenWrt (x86_64) 自定義編譯發布
+          ### OpenWrt (x86_64) 自定義編譯發布 (含 OpenClash)
           
           * **版本名稱**: ${{ env.RELEASE_NAME }}
           * **官方源碼**: ${{ env.OPENWRT_TAG }} 
           
-          #### 🔐 登入資訊 (請務必記住)：
-          * **登入網址 (IP)**: `http://${{ github.event.inputs.router_ip }}`
-          * **帳號 (AC)**: `root`
-          * **密碼 (PW)**: `無` *(初次登入預設為空，登入後請盡速設定密碼)*
+          #### 🔐 登入資訊：
+          * **登入網址**: `http://${{ github.event.inputs.router_ip }}`
+          * **帳號**: `root` / **密碼**: `無`
           
-          #### 🚀 你的專屬配置清單：
-          * **系統空間大小**: `${{ github.event.inputs.firmware_size }} MB`
-          * **Docker 容器支援**: `${{ github.event.inputs.include_docker == 'yes' && '✅ 已包含 (可於網頁後台管理 Docker)' || '❌ 未包含' }}`
-          * **常用實用外掛**: `${{ github.event.inputs.include_ext_apps == 'yes' && '✅ 已包含 (UPnP/Samba/TTYD/WOL/DDNS)' || '❌ 未包含' }}`
+          #### 🚀 配置清單：
+          * **OpenClash**: `${{ github.event.inputs.include_openclash == 'yes' && '✅ 已包含 (需手動下載內核)' || '❌ 未包含' }}`
+          * **Docker**: `${{ github.event.inputs.include_docker == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
+          * **常用外掛**: `${{ github.event.inputs.include_ext_apps == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
           
-          #### 📥 韌體下載與使用指南：
-          * **下載說明**：為突破 GitHub 單檔 2GB 限制，檔案保留了官方的 `.gz` 壓縮格式。下載後請先**解壓縮** (Windows 推薦使用 7-Zip 或 WinRAR；Mac 直接雙擊)，即可獲得 `.img` 或 `.vmdk` 檔案。
-          * **現代化主機 / VM 虛擬機**：請下載含 `efi` 的檔案。
-          * **強烈推薦格式**：`squashfs` (支援後台一鍵恢復原廠設定)。
-          * **虛擬機直通**：直接下載 `.vmdk.gz` 檔案，解壓縮後匯入。
+          #### 📥 下載說明 (請先解壓縮 .gz)：
+          * **實體機 (推薦)**: `squashfs-combined-efi.img.gz`
+          * **虛擬機**: `squashfs-combined-efi.vmdk.gz`
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
