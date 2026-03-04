@@ -146,14 +146,31 @@ jobs:
       run: |
         cd openwrt/bin/targets/x86/64/
         
+        # 1. 先全部解壓縮，方便我們手動轉換格式
+        echo "正在解壓縮所有映像檔以進行檢查..."
+        gzip -d *.gz || true
+        
+        # 2. 強制生成 SquashFS 的 VMDK 檔 (如果編譯器沒有產出的話)
+        echo "檢查並補齊缺失的 VMDK 檔案..."
+        for img in *squashfs-combined*.img; do
+          if [ -f "$img" ]; then
+            vmdk=${img%.img}.vmdk
+            if [ ! -f "$vmdk" ]; then
+              echo "發現缺失 VMDK，正在使用 qemu-img 手動轉換: $img -> $vmdk"
+              qemu-img convert -f raw -O vmdk "$img" "$vmdk"
+            fi
+          fi
+        done
+        
         mkdir -p release_files
         
-        # 挑選已壓縮的 .img.gz 與 .vmdk.gz 檔案 (避免超過 GitHub 2GB 限制)
-        cp *squashfs-combined*.img.gz release_files/ 2>/dev/null || true
-        cp *squashfs-combined*.vmdk.gz release_files/ 2>/dev/null || true
-        cp *ext4-combined*.img.gz release_files/ 2>/dev/null || true
-        cp *ext4-combined*.vmdk.gz release_files/ 2>/dev/null || true
+        # 3. 挑選檔案 (此時應該要是解壓狀態的 .img 和 .vmdk)
+        cp *squashfs-combined*.img release_files/ 2>/dev/null || true
+        cp *squashfs-combined*.vmdk release_files/ 2>/dev/null || true
+        cp *ext4-combined*.img release_files/ 2>/dev/null || true
+        cp *ext4-combined*.vmdk release_files/ 2>/dev/null || true
         
+        # 複製說明檔
         cp config.buildinfo release_files/config_編譯功能套件清單.buildinfo 2>/dev/null || true
         cp feeds.buildinfo release_files/feeds_外部軟體源紀錄.buildinfo 2>/dev/null || true
         cp version.buildinfo release_files/version_內部編譯號.buildinfo 2>/dev/null || true
@@ -165,6 +182,13 @@ jobs:
             cp "$f" "release_files/${f%.manifest}_預裝軟體清單.manifest"
           fi
         done
+        
+        # 4. 進入 release_files 資料夾，將大型映像檔重新壓縮成 .gz (符合 GitHub 2GB 限制)
+        cd release_files
+        echo "正在重新壓縮韌體檔案..."
+        gzip *.img
+        gzip *.vmdk
+        echo "檔案準備完成！"
 
     - name: Generate Release Info
       run: |
