@@ -1,6 +1,6 @@
 # OpenWrt x86_64 Auto Build (原版 OpenWrt 自動編譯)
 
-[![Build Custom OpenWrt (All Formats)](https://github.com/YOUR_USERNAME/YOUR_REPO_NAME/actions/workflows/build-openwrt.yml/badge.svg)](https://github.com/YOUR_USERNAME/YOUR_REPO_NAME/actions/workflows/build-openwrt.yml)
+[![Build Custom OpenWrt (All Formats)](https://github.com/sammy0101/Build-OpenWrt/actions/workflows/build-openwrt.yml/badge.svg)](https://github.com/sammy0101/Build-OpenWrt/actions/workflows/build-openwrt.yml)
 
 這是一個基於 **GitHub Actions** 的自動化編譯項目，專為 **x86_64 (一般 PC / 軟路由 / 虛擬機)** 平台設計。
 它會自動偵測並下載 **OpenWrt 官方最新穩定版 (Stable Release)** 源碼進行編譯，確保系統純淨、穩定且安全。
