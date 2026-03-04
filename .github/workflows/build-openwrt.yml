@@ -106,7 +106,7 @@ jobs:
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
         
         # 5. 若下拉選單選擇 yes，則加入 Docker 相關核心與 LuCI 介面
-        # 【修正重點】：這裡的 if 後面已經補上了空格 (if [ ... ])
+        # (已包含正確的空格語法)
         if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
@@ -115,7 +115,7 @@ jobs:
         fi
 
         # 6. 若下拉選單選擇 yes，則加入 5 大常用實用外掛與中文包
-        # 【修正重點】：這裡的 if 後面也確認有空格 (if [ ... ])
+        # (已包含正確的空格語法)
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
@@ -168,7 +168,8 @@ jobs:
 
     - name: Generate Release Info
       run: |
-        DATE_STR=$(date +"%Y%m%d")
+        # 加入小時與分鐘 (-%H%M)，確保每次編譯的版本號都是唯一的，避免重複上傳報錯
+        DATE_STR=$(date +"%Y%m%d-%H%M")
         RELEASE_NAME="OpenWRT+${{ env.OPENWRT_TAG }}-${DATE_STR}"
         RELEASE_TAG="${{ env.OPENWRT_TAG }}-${DATE_STR}"
         echo "RELEASE_NAME=${RELEASE_NAME}" >> $GITHUB_ENV
