@@ -81,7 +81,7 @@ jobs:
         sed -i "s/192.168.1.1/${{ github.event.inputs.router_ip }}/g" package/base-files/files/bin/config_generate
         echo "已將預設 IP 修改為: ${{ github.event.inputs.router_ip }}"
         
-        # 2. 強制預設顯示繁體中文 (寫入第一次開機初始化腳本)
+        # 2. 強制預設顯示繁體中文
         mkdir -p package/base-files/files/etc/uci-defaults
         cat << "EOF" > package/base-files/files/etc/uci-defaults/99-default-zh-tw
         #!/bin/sh
@@ -90,17 +90,14 @@ jobs:
         exit 0
         EOF
         chmod +x package/base-files/files/etc/uci-defaults/99-default-zh-tw
-        echo "已強制設定網頁預設語言為: 繁體中文"
 
     - name: Download OpenClash Source
       working-directory: ./openwrt
       run: |
-        # 如果選擇了 Yes，就去下載 OpenClash 源碼
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
           echo "正在下載 OpenClash 源碼..."
           mkdir -p package/custom
           git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/custom/luci-app-openclash
-          echo "OpenClash 源碼下載完成"
         fi
 
     - name: Update and install feeds
@@ -125,40 +122,43 @@ jobs:
         echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
         echo "CONFIG_VMDK_IMAGES=y" >> .config
         
-        # 3. 磁碟空間 (讀取表單填寫的 MB 數)
+        # 3. 磁碟空間 (這裡設定編譯參數，但我們會再用後處理強制確保大小)
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
-        # 4. 內建 LuCI 網頁管理與中文、線上更新
+        # [關鍵] 加入磁碟工具，確保 SquashFS 開機後能自動擴容 Overlay
+        echo "CONFIG_PACKAGE_parted=y" >> .config
+        echo "CONFIG_PACKAGE_losetup=y" >> .config
+        echo "CONFIG_PACKAGE_resize2fs=y" >> .config
+        echo "CONFIG_PACKAGE_lsblk=y" >> .config
+        
+        # 4. 內建 LuCI 與中文
         echo "CONFIG_PACKAGE_luci=y" >> .config
         echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-base-zh-tw=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
         
-        # 5. 若選擇 Yes，則加入 Docker
-        if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+        # 5. Docker 設定
+        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-tw=y" >> .config
         fi
 
-        # 6. 若選擇 Yes，則加入 OpenClash (包含依賴處理)
-        if[ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+        # 6. OpenClash 設定
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-openclash-zh-tw=y" >> .config
-          
-          # 解決依賴衝突：OpenClash 需要 dnsmasq-full
           echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
           echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
-          
           echo "CONFIG_PACKAGE_curl=y" >> .config
           echo "CONFIG_PACKAGE_bash=y" >> .config
           echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
         fi
 
-        # 7. 若選擇 Yes，則加入常用外掛
-        if[ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+        # 7. 常用外掛設定
+        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
@@ -184,21 +184,34 @@ jobs:
         echo "開始使用 $(nproc) 個執行緒進行編譯..."
         make -j$(nproc) || make -j1 V=s
 
-    - name: Prepare All Firmware Files
+    - name: Prepare and Resize Firmware Files
       run: |
         cd openwrt/bin/targets/x86/64/
         
         echo "正在解壓縮所有映像檔..."
         gzip -d *.gz || true
         
+        # [關鍵步驟] 強制調整所有 .img 檔案的物理大小到用戶指定值 (例如 2048M)
+        # 這樣 SquashFS 刷機後就會有足夠的「未分配空間」供 Overlay 使用
+        TARGET_SIZE="${{ github.event.inputs.firmware_size }}M"
+        echo "🔥 正在強制將映像檔撐大至: $TARGET_SIZE ..."
+        
+        for img in *.img; do
+          if [ -f "$img" ]; then
+            echo "Resizing $img ..."
+            qemu-img resize -f raw "$img" "$TARGET_SIZE"
+          fi
+        done
+        
+        # 在調整完大小後，再檢查並轉換 VMDK (確保 VMDK 也是大容量)
         echo "檢查並補齊缺失的 VMDK 檔案..."
         for img in *.img; do
           if [ -f "$img" ]; then
             vmdk=${img%.img}.vmdk
-            if [ ! -f "$vmdk" ]; then
-              echo "發現 $img 缺少對應的 VMDK，正在使用 qemu-img 手動轉換..."
-              qemu-img convert -f raw -O vmdk "$img" "$vmdk"
-            fi
+            # 即使 VMDK 存在，我們也重新轉一次，確保它繼承了新的 2GB 大小
+            echo "轉換/更新 VMDK: $img -> $vmdk"
+            rm -f "$vmdk"
+            qemu-img convert -f raw -O vmdk "$img" "$vmdk"
           fi
         done
         
@@ -214,7 +227,7 @@ jobs:
         cp sha256sums release_files/sha256sums_檔案驗證碼.txt 2>/dev/null || true
         
         for f in *.manifest; do
-          if[ -f "$f" ]; then
+          if [ -f "$f" ]; then
             cp "$f" "release_files/${f%.manifest}_預裝軟體清單.manifest"
           fi
         done
@@ -251,12 +264,13 @@ jobs:
           * **預設語系**: `繁體中文`
           
           #### 🚀 配置清單：
-          * **OpenClash**: `${{ github.event.inputs.include_openclash == 'yes' && '✅ 已包含 (需手動下載內核)' || '❌ 未包含' }}`
+          * **系統空間**: `${{ github.event.inputs.firmware_size }} MB` (SquashFS 將自動擴容至此大小)
+          * **OpenClash**: `${{ github.event.inputs.include_openclash == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
           * **Docker**: `${{ github.event.inputs.include_docker == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
           * **常用外掛**: `${{ github.event.inputs.include_ext_apps == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
           
           #### 📥 下載說明 (請先解壓縮 .gz)：
-          * **實體機 (推薦)**: `squashfs-combined-efi.img.gz`
-          * **虛擬機**: `squashfs-combined-efi.vmdk.gz`
+          * **實體機 (推薦)**: `squashfs-combined-efi.img.gz` (刷入後開機，會自動擴容 Overlay)。
+          * **虛擬機**: `squashfs-combined-efi.vmdk.gz` (匯入後即為 ${{ github.event.inputs.firmware_size }} MB 大硬碟)。
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
