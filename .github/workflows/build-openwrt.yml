@@ -50,7 +50,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # [關鍵修正] 先關閉並刪除預設 Swap，再重新建立，解決 Text file busy
+    # 1. 建立 SWAP
     - name: Initialize environment & Swap
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -59,12 +59,11 @@ jobs:
         sudo swapoff -a || true
         sudo rm -f /swapfile
         
-        echo "正在建立 10GB SWAP 虛擬記憶體..."
+        echo "正在建立 10GB SWAP..."
         sudo dd if=/dev/zero of=/swapfile bs=1M count=10240 status=progress
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
-        echo "SWAP 建立完成，目前記憶體狀態："
         free -h
         
         echo "正在安裝編譯依賴..."
@@ -111,32 +110,20 @@ jobs:
       working-directory: ./openwrt
       run: |
         ./scripts/feeds update -a
+        ./scripts/feeds install -a
         
-        echo "正在精準安裝所需套件..."
-        # 基礎與工具
-        ./scripts/feeds install luci luci-ssl luci-app-attendedsysupgrade
-        ./scripts/feeds install parted losetup resize2fs lsblk
-        # OpenClash 依賴
-        ./scripts/feeds install dnsmasq-full curl bash libcap libcap-bin
-        
-        # 根據選項安裝
-        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
-          ./scripts/feeds install docker dockerd luci-app-dockerman
+        # 額外確保基礎依賴被識別
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+          ./scripts/feeds install dnsmasq-full curl bash libcap libcap-bin ruby
         fi
-        
-        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
-          ./scripts/feeds install luci-app-upnp luci-app-samba4 luci-app-ttyd luci-app-wol luci-app-ddns
-        fi
-        
-        # 安裝 luci feed 以確保基礎庫完整
-        ./scripts/feeds install -p luci -a
 
-    - name: Generate default configuration
+    - name: Generate Configuration
       working-directory: ./openwrt
       run: |
         rm -f .config
         touch .config
         
+        echo "=== 寫入基礎平台設定 ==="
         echo "CONFIG_TARGET_x86=y" >> .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
@@ -145,31 +132,52 @@ jobs:
         echo "CONFIG_VMDK_IMAGES=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
+        echo "=== 寫入工具設定 ==="
         echo "CONFIG_PACKAGE_parted=y" >> .config
         echo "CONFIG_PACKAGE_losetup=y" >> .config
         echo "CONFIG_PACKAGE_resize2fs=y" >> .config
         echo "CONFIG_PACKAGE_lsblk=y" >> .config
         
+        echo "=== 寫入 LuCI 設定 ==="
         echo "CONFIG_PACKAGE_luci=y" >> .config
         echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-base-zh-tw=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
 
-        make defconfig
-
+        # 這裡根據你提供的 APK 清單進行精準配置
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-          sed -i 's/CONFIG_PACKAGE_dnsmasq=y/# CONFIG_PACKAGE_dnsmasq is not set/g' .config
+          echo "=== 寫入 OpenClash 完整依賴 (解決衝突) ==="
+          
+          # 1. 移除衝突套件
+          echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
+          echo "CONFIG_PACKAGE_ip-tiny=n" >> .config  # 關鍵：移除 ip-tiny 才能裝 ip-full
+          
+          # 2. OpenClash 插件本體
           echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-openclash-zh-tw=y" >> .config
+          
+          # 3. 你提供的必要 APK 依賴清單
+          echo "CONFIG_PACKAGE_bash=y" >> .config
           echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
           echo "CONFIG_PACKAGE_curl=y" >> .config
-          echo "CONFIG_PACKAGE_bash=y" >> .config
+          echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
+          echo "CONFIG_PACKAGE_ip-full=y" >> .config
+          echo "CONFIG_PACKAGE_ruby=y" >> .config
+          echo "CONFIG_PACKAGE_ruby-yaml=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-inet-diag=y" >> .config
+          echo "CONFIG_PACKAGE_unzip=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-tproxy=y" >> .config
+          echo "CONFIG_PACKAGE_luci-compat=y" >> .config
+          
+          # 4. 其他底層庫 (保險起見)
           echo "CONFIG_PACKAGE_libcap=y" >> .config
           echo "CONFIG_PACKAGE_libcap-bin=y" >> .config
         fi
 
         if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+          echo "=== 寫入 Docker 設定 ==="
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
@@ -177,6 +185,7 @@ jobs:
         fi
 
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+          echo "=== 寫入常用外掛設定 ==="
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
@@ -189,6 +198,7 @@ jobs:
           echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-tw=y" >> .config
         fi
         
+        echo "正在生成最終設定..."
         make defconfig
 
     - name: Download package sources
@@ -260,7 +270,7 @@ jobs:
         name: ${{ env.RELEASE_NAME }}
         files: openwrt/bin/targets/x86/64/release_files/*
         body: |
-          ### OpenWrt (x86_64) 自定義編譯 (SWAP修復版)
+          ### OpenWrt (x86_64) 自定義編譯 (Final)
           
           * **版本**: ${{ env.RELEASE_NAME }}
           * **源碼**: ${{ env.OPENWRT_TAG }} 
