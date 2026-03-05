@@ -1,4 +1,4 @@
-name: Build Custom OpenWrt (Fix Memory)
+name: Build Custom OpenWrt
 
 on:
   workflow_dispatch:
