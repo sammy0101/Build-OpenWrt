@@ -1,4 +1,4 @@
-name: Build OpenWrt (Clean & Stable)
+name: Build OpenWrt
 
 on:
   workflow_dispatch:
@@ -137,7 +137,7 @@ jobs:
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
 
         # 這裡已經徹底檢查過，if 和 [ 之間絕對有空格
-        if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "=== 寫入 Docker 設定 ==="
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
@@ -146,7 +146,7 @@ jobs:
         fi
 
         # 這裡也徹底檢查過，有空格！
-        if[ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "=== 寫入常用外掛設定 ==="
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
@@ -210,7 +210,7 @@ jobs:
         cp sha256sums release_files/sha256sums_檔案驗證碼.txt 2>/dev/null || true
         
         for f in *.manifest; do
-          if[ -f "$f" ]; then
+          if [ -f "$f" ]; then
             cp "$f" "release_files/${f%.manifest}_預裝軟體清單.manifest"
           fi
         done
