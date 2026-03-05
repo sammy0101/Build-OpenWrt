@@ -50,12 +50,16 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # [關鍵修正] 改用 dd 指令建立 10GB SWAP，解決 Text file busy 錯誤
+    # [關鍵修正] 先關閉並刪除預設 Swap，再重新建立，解決 Text file busy
     - name: Initialize environment & Swap
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        echo "正在使用 dd 建立 10GB SWAP 虛擬記憶體 (這可能需要幾秒鐘)..."
+        echo "正在清理舊有 SWAP..."
+        sudo swapoff -a || true
+        sudo rm -f /swapfile
+        
+        echo "正在建立 10GB SWAP 虛擬記憶體..."
         sudo dd if=/dev/zero of=/swapfile bs=1M count=10240 status=progress
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
@@ -124,7 +128,7 @@ jobs:
           ./scripts/feeds install luci-app-upnp luci-app-samba4 luci-app-ttyd luci-app-wol luci-app-ddns
         fi
         
-        # 為了保險起見，安裝一次 luci feed 的所有內容，防止漏掉基礎庫
+        # 安裝 luci feed 以確保基礎庫完整
         ./scripts/feeds install -p luci -a
 
     - name: Generate default configuration
@@ -196,7 +200,6 @@ jobs:
       working-directory: ./openwrt
       run: |
         echo "開始編譯..."
-        # 使用 Swap 後通常不會失敗，但保留容錯機制
         make -j$(nproc) || (
           echo "================ 編譯失敗，正在輸出錯誤日誌 ================"
           make -j1 V=s | tail -n 100
@@ -257,7 +260,7 @@ jobs:
         name: ${{ env.RELEASE_NAME }}
         files: openwrt/bin/targets/x86/64/release_files/*
         body: |
-          ### OpenWrt (x86_64) 自定義編譯 (Final Fix)
+          ### OpenWrt (x86_64) 自定義編譯 (SWAP修復版)
           
           * **版本**: ${{ env.RELEASE_NAME }}
           * **源碼**: ${{ env.OPENWRT_TAG }} 
