@@ -1,4 +1,4 @@
-name: Build OpenWrt
+name: Build OpenWrt (Clean & Stable)
 
 on:
   workflow_dispatch:
@@ -121,7 +121,7 @@ jobs:
         echo "CONFIG_VMDK_IMAGES=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
-        echo "=== 寫入工具設定 (確保自動擴容) ==="
+        echo "=== 寫入工具設定 ==="
         echo "CONFIG_PACKAGE_parted=y" >> .config
         echo "CONFIG_PACKAGE_losetup=y" >> .config
         echo "CONFIG_PACKAGE_resize2fs=y" >> .config
@@ -187,12 +187,12 @@ jobs:
         TARGET_SIZE="${{ github.event.inputs.firmware_size }}M"
         
         # [關鍵修正] 只對 SquashFS 進行強制擴容，因為 EXT4 已經足夠大了
-        # EXT4 已經由 CONFIG_TARGET_ROOTFS_PARTSIZE 控制，無需再動
         echo "🔥 正在處理 SquashFS 映像檔，目標大小: $TARGET_SIZE"
         
+        # 使用萬用字元找出 squashfs 的檔案
         for img in *squashfs*.img; do
           if [ -f "$img" ]; then
-            echo "Resizing (Expanding) $img ..."
+            echo "正在擴容 (Expanding) $img ..."
             qemu-img resize -f raw "$img" "$TARGET_SIZE"
           fi
         done
