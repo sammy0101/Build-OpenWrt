@@ -50,13 +50,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # [關鍵修正 1] 建立 10GB SWAP 虛擬記憶體，防止 Rust 編譯時記憶體不足崩潰
+    # [關鍵修正] 改用 dd 指令建立 10GB SWAP，解決 Text file busy 錯誤
     - name: Initialize environment & Swap
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        echo "正在建立 10GB SWAP 虛擬記憶體..."
-        sudo fallocate -l 10G /swapfile
+        echo "正在使用 dd 建立 10GB SWAP 虛擬記憶體 (這可能需要幾秒鐘)..."
+        sudo dd if=/dev/zero of=/swapfile bs=1M count=10240 status=progress
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
@@ -103,34 +103,28 @@ jobs:
           git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/custom/luci-app-openclash
         fi
 
-    # [關鍵修正 2] 改用精準安裝 (Selective Install)，避免安裝所有套件導致編譯過多廢物
     - name: Update and install feeds
       working-directory: ./openwrt
       run: |
         ./scripts/feeds update -a
         
         echo "正在精準安裝所需套件..."
-        # 基礎套件
+        # 基礎與工具
         ./scripts/feeds install luci luci-ssl luci-app-attendedsysupgrade
-        # 磁碟工具
         ./scripts/feeds install parted losetup resize2fs lsblk
         # OpenClash 依賴
         ./scripts/feeds install dnsmasq-full curl bash libcap libcap-bin
         
-        # 根據選項安裝 Docker
+        # 根據選項安裝
         if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           ./scripts/feeds install docker dockerd luci-app-dockerman
         fi
         
-        # 根據選項安裝外掛
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           ./scripts/feeds install luci-app-upnp luci-app-samba4 luci-app-ttyd luci-app-wol luci-app-ddns
         fi
         
-        # 安裝自定義目錄下的 OpenClash
-        # 注意：因為 OpenClash 是手動 clone 的，通常不需要 feed install，但為了保險起見我們執行 install -a -p custom 如果有的話
-        # 這裡簡單執行一次 install -a 僅針對 custom feed (如果有定義)，或者直接依賴 make defconfig 自動抓取
-        # 為確保萬無一失，我們只對 luci feed 執行一次完整安裝以防遺漏基礎庫
+        # 為了保險起見，安裝一次 luci feed 的所有內容，防止漏掉基礎庫
         ./scripts/feeds install -p luci -a
 
     - name: Generate default configuration
@@ -263,7 +257,7 @@ jobs:
         name: ${{ env.RELEASE_NAME }}
         files: openwrt/bin/targets/x86/64/release_files/*
         body: |
-          ### OpenWrt (x86_64) 自定義編譯 (SWAP版)
+          ### OpenWrt (x86_64) 自定義編譯 (Final Fix)
           
           * **版本**: ${{ env.RELEASE_NAME }}
           * **源碼**: ${{ env.OPENWRT_TAG }} 
