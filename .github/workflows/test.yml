@@ -1,0 +1,7 @@
+name: Test Action
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "系統正常運作中！"
