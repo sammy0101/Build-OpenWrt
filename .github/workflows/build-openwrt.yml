@@ -50,7 +50,19 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 1. 建立 SWAP
+    # [關鍵步驟 1] 清理硬碟空間，刪除不需要的內建軟體 (釋放約 20GB)
+    - name: Free Disk Space
+      run: |
+        echo "正在清理硬碟空間..."
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        echo "硬碟空間清理完成！目前可用空間："
+        df -h
+
+    # [關鍵步驟 2] 建立 8GB SWAP (在空間足夠的情況下建立)
     - name: Initialize environment & Swap
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -59,8 +71,8 @@ jobs:
         sudo swapoff -a || true
         sudo rm -f /swapfile
         
-        echo "正在建立 10GB SWAP..."
-        sudo dd if=/dev/zero of=/swapfile bs=1M count=10240 status=progress
+        echo "正在建立 8GB SWAP..."
+        sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=progress
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
@@ -112,7 +124,7 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
-        # 額外確保基礎依賴被識別
+        # 額外確保 OpenClash 依賴被安裝
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
           ./scripts/feeds install dnsmasq-full curl bash libcap libcap-bin ruby
         fi
@@ -145,19 +157,15 @@ jobs:
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
 
-        # 這裡根據你提供的 APK 清單進行精準配置
+        # OpenClash 設定 (Clean Config)
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-          echo "=== 寫入 OpenClash 完整依賴 (解決衝突) ==="
-          
-          # 1. 移除衝突套件
+          echo "=== 寫入 OpenClash 完整依賴 ==="
           echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
-          echo "CONFIG_PACKAGE_ip-tiny=n" >> .config  # 關鍵：移除 ip-tiny 才能裝 ip-full
+          echo "CONFIG_PACKAGE_ip-tiny=n" >> .config
           
-          # 2. OpenClash 插件本體
           echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-openclash-zh-tw=y" >> .config
           
-          # 3. 你提供的必要 APK 依賴清單
           echo "CONFIG_PACKAGE_bash=y" >> .config
           echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
           echo "CONFIG_PACKAGE_curl=y" >> .config
@@ -170,8 +178,6 @@ jobs:
           echo "CONFIG_PACKAGE_unzip=y" >> .config
           echo "CONFIG_PACKAGE_kmod-nft-tproxy=y" >> .config
           echo "CONFIG_PACKAGE_luci-compat=y" >> .config
-          
-          # 4. 其他底層庫 (保險起見)
           echo "CONFIG_PACKAGE_libcap=y" >> .config
           echo "CONFIG_PACKAGE_libcap-bin=y" >> .config
         fi
@@ -210,7 +216,8 @@ jobs:
       working-directory: ./openwrt
       run: |
         echo "開始編譯..."
-        make -j$(nproc) || (
+        # 加上 IGNORE_ERRORS=m 讓非關鍵套件錯誤不中斷編譯
+        make -j$(nproc) IGNORE_ERRORS=m || (
           echo "================ 編譯失敗，正在輸出錯誤日誌 ================"
           make -j1 V=s | tail -n 100
           exit 1
@@ -270,7 +277,7 @@ jobs:
         name: ${{ env.RELEASE_NAME }}
         files: openwrt/bin/targets/x86/64/release_files/*
         body: |
-          ### OpenWrt (x86_64) 自定義編譯 (Final)
+          ### OpenWrt (x86_64) 自定義編譯 (Space Optimized)
           
           * **版本**: ${{ env.RELEASE_NAME }}
           * **源碼**: ${{ env.OPENWRT_TAG }} 
