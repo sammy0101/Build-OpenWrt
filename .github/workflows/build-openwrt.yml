@@ -1,4 +1,4 @@
-name: Build Custom OpenWrt (Fix)
+name: Build Custom OpenWrt (Fix Memory)
 
 on:
   workflow_dispatch:
@@ -50,10 +50,20 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Initialize environment
+    # [關鍵修正 1] 建立 10GB SWAP 虛擬記憶體，防止 Rust 編譯時記憶體不足崩潰
+    - name: Initialize environment & Swap
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
+        echo "正在建立 10GB SWAP 虛擬記憶體..."
+        sudo fallocate -l 10G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        echo "SWAP 建立完成，目前記憶體狀態："
+        free -h
+        
+        echo "正在安裝編譯依賴..."
         sudo apt-get update
         sudo apt-get -y install build-essential clang flex bison g++ gawk \
         gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
@@ -93,11 +103,35 @@ jobs:
           git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/custom/luci-app-openclash
         fi
 
+    # [關鍵修正 2] 改用精準安裝 (Selective Install)，避免安裝所有套件導致編譯過多廢物
     - name: Update and install feeds
       working-directory: ./openwrt
       run: |
         ./scripts/feeds update -a
-        ./scripts/feeds install -a
+        
+        echo "正在精準安裝所需套件..."
+        # 基礎套件
+        ./scripts/feeds install luci luci-ssl luci-app-attendedsysupgrade
+        # 磁碟工具
+        ./scripts/feeds install parted losetup resize2fs lsblk
+        # OpenClash 依賴
+        ./scripts/feeds install dnsmasq-full curl bash libcap libcap-bin
+        
+        # 根據選項安裝 Docker
+        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+          ./scripts/feeds install docker dockerd luci-app-dockerman
+        fi
+        
+        # 根據選項安裝外掛
+        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+          ./scripts/feeds install luci-app-upnp luci-app-samba4 luci-app-ttyd luci-app-wol luci-app-ddns
+        fi
+        
+        # 安裝自定義目錄下的 OpenClash
+        # 注意：因為 OpenClash 是手動 clone 的，通常不需要 feed install，但為了保險起見我們執行 install -a -p custom 如果有的話
+        # 這裡簡單執行一次 install -a 僅針對 custom feed (如果有定義)，或者直接依賴 make defconfig 自動抓取
+        # 為確保萬無一失，我們只對 luci feed 執行一次完整安裝以防遺漏基礎庫
+        ./scripts/feeds install -p luci -a
 
     - name: Generate default configuration
       working-directory: ./openwrt
@@ -105,7 +139,6 @@ jobs:
         rm -f .config
         touch .config
         
-        # 1. 寫入基礎平台設定
         echo "CONFIG_TARGET_x86=y" >> .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
@@ -114,29 +147,21 @@ jobs:
         echo "CONFIG_VMDK_IMAGES=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
-        # 磁碟工具
         echo "CONFIG_PACKAGE_parted=y" >> .config
         echo "CONFIG_PACKAGE_losetup=y" >> .config
         echo "CONFIG_PACKAGE_resize2fs=y" >> .config
         echo "CONFIG_PACKAGE_lsblk=y" >> .config
         
-        # 基礎 LuCI
         echo "CONFIG_PACKAGE_luci=y" >> .config
         echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-base-zh-tw=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
         echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
 
-        # 2. 先產生一次 defconfig，確保基礎相依性建立
         make defconfig
 
-        # 3. [關鍵修正] 使用 sed 安全移除預設 dnsmasq，避免衝突
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-          echo "正在調整 OpenClash 依賴 (dnsmasq-full)..."
-          # 在 .config 中尋找並強制關閉 dnsmasq
           sed -i 's/CONFIG_PACKAGE_dnsmasq=y/# CONFIG_PACKAGE_dnsmasq is not set/g' .config
-          
-          # 加入 OpenClash 與 dnsmasq-full
           echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-openclash-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
@@ -146,7 +171,6 @@ jobs:
           echo "CONFIG_PACKAGE_libcap-bin=y" >> .config
         fi
 
-        # 4. 加入 Docker
         if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
@@ -154,7 +178,6 @@ jobs:
           echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-tw=y" >> .config
         fi
 
-        # 5. 加入常用外掛
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
@@ -168,7 +191,6 @@ jobs:
           echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-tw=y" >> .config
         fi
         
-        # 6. 最後再次整理 defconfig，讓 OpenWrt 自動計算依賴樹
         make defconfig
 
     - name: Download package sources
@@ -180,7 +202,7 @@ jobs:
       working-directory: ./openwrt
       run: |
         echo "開始編譯..."
-        # 這裡修改為：如果多線程失敗，自動切換單線程，並印出最後 100 行錯誤以便除錯
+        # 使用 Swap 後通常不會失敗，但保留容錯機制
         make -j$(nproc) || (
           echo "================ 編譯失敗，正在輸出錯誤日誌 ================"
           make -j1 V=s | tail -n 100
@@ -241,7 +263,7 @@ jobs:
         name: ${{ env.RELEASE_NAME }}
         files: openwrt/bin/targets/x86/64/release_files/*
         body: |
-          ### OpenWrt (x86_64) 自定義編譯 (修復版)
+          ### OpenWrt (x86_64) 自定義編譯 (SWAP版)
           
           * **版本**: ${{ env.RELEASE_NAME }}
           * **源碼**: ${{ env.OPENWRT_TAG }} 
