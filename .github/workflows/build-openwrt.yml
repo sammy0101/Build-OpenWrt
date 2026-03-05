@@ -185,17 +185,19 @@ jobs:
         gzip -d *.gz || true
         
         TARGET_SIZE="${{ github.event.inputs.firmware_size }}M"
-        echo "🔥 正在強制將所有映像檔撐大至: $TARGET_SIZE (保證空間)"
         
-        # 1. 調整 .img 大小
-        for img in *.img; do
+        # [關鍵修正] 只對 SquashFS 進行強制擴容，因為 EXT4 已經足夠大了
+        # EXT4 已經由 CONFIG_TARGET_ROOTFS_PARTSIZE 控制，無需再動
+        echo "🔥 正在處理 SquashFS 映像檔，目標大小: $TARGET_SIZE"
+        
+        for img in *squashfs*.img; do
           if [ -f "$img" ]; then
-            echo "Resizing $img ..."
+            echo "Resizing (Expanding) $img ..."
             qemu-img resize -f raw "$img" "$TARGET_SIZE"
           fi
         done
         
-        # 2. 轉換為 VMDK
+        # 2. 轉換為 VMDK (包含 EXT4 和 SquashFS 全部都轉)
         echo "正在生成/更新 VMDK..."
         for img in *.img; do
           if [ -f "$img" ]; then
@@ -259,6 +261,6 @@ jobs:
           * **常用外掛**: `${{ github.event.inputs.include_ext_apps == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
           
           #### 💾 空間保證：
-          * **系統空間**: `${{ github.event.inputs.firmware_size }} MB` (所有映像檔均已物理擴容)
+          * **系統空間**: `${{ github.event.inputs.firmware_size }} MB`
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
