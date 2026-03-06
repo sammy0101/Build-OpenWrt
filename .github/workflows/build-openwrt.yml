@@ -100,7 +100,7 @@ jobs:
     - name: Download OpenClash Source
       working-directory: ./openwrt
       run: |
-        if[ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
           mkdir -p package/custom
           git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/custom/luci-app-openclash
         fi
@@ -147,7 +147,7 @@ jobs:
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
 
         # 處理 OpenClash 及其複雜的相依性衝突
-        if[ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
           echo "=== 寫入 OpenClash 完整依賴 (解決衝突) ==="
           
           # 移除會打架的預設套件
@@ -174,14 +174,14 @@ jobs:
           echo "CONFIG_PACKAGE_libcap-bin=y" >> .config
         fi
 
-        if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "=== 寫入 Docker 設定 ==="
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
         fi
 
-        if[ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "=== 寫入常用外掛設定 ==="
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
@@ -232,7 +232,7 @@ jobs:
         # 轉換為 VMDK (包含 EXT4 和 SquashFS 全部都轉)
         echo "正在生成/更新 VMDK..."
         for img in *.img; do
-          if[ -f "$img" ]; then
+          if [ -f "$img" ]; then
             vmdk=${img%.img}.vmdk
             rm -f "$vmdk"
             qemu-img convert -f raw -O vmdk "$img" "$vmdk"
