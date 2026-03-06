@@ -15,7 +15,6 @@
 *   **Docker 支援**：可選配 Docker CE 核心與 Dockerman 圖形化管理介面。
 *   **實用外掛整合**：可選配 UPnP、Samba (網路共享)、TTYD (網頁終端)、WOL (網路喚醒)、DDNS (動態域名)。
 *   **一鍵線上更新**：內建 `Attended Sysupgrade`，未來可直接在網頁後台升級系統，無需重新刷機。
-*   **繁體中文介面**：所有內建功能均已包含 `luci-i18n-*-zh-tw` 語言包。
 
 ---
 
