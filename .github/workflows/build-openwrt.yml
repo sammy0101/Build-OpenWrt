@@ -124,7 +124,7 @@ jobs:
         echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
 
-        if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "=== 寫入 Docker 設定 ==="
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
