@@ -1,4 +1,4 @@
-name: Build OpenWrt (First Boot Install)
+name: Build OpenWrt (Final Stable)
 
 on:
   workflow_dispatch:
@@ -89,22 +89,20 @@ jobs:
         sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
-        # 2. 建立自定義檔案結構
+        # 2. 建立目錄
         mkdir -p files/etc/uci-defaults
         mkdir -p files/root
         
-        # 3. 設定 IP 與中文
-        cat << "EOF" > files/etc/uci-defaults/99-custom-settings
-        #!/bin/sh
-        uci set network.lan.ipaddr='${{ github.event.inputs.router_ip }}'
-        # 嘗試設定中文 (如果有的話)
-        uci set luci.main.lang='zh_tw'
-        uci commit
-        exit 0
-        EOF
-        chmod +x files/etc/uci-defaults/99-custom-settings
+        # 3. 設定 IP 與中文 (改用 echo 寫入，避免語法錯誤)
+        CUSTOM_SCRIPT="files/etc/uci-defaults/99-custom-settings"
+        echo "#!/bin/sh" > "$CUSTOM_SCRIPT"
+        echo "uci set network.lan.ipaddr='${{ github.event.inputs.router_ip }}'" >> "$CUSTOM_SCRIPT"
+        echo "uci set luci.main.lang='zh_tw'" >> "$CUSTOM_SCRIPT"
+        echo "uci commit" >> "$CUSTOM_SCRIPT"
+        echo "exit 0" >> "$CUSTOM_SCRIPT"
+        chmod +x "$CUSTOM_SCRIPT"
 
-    - name: Prepare OpenClash (Offline Install Mode)
+    - name: Prepare OpenClash (Offline Install)
       working-directory: ./openwrt
       run: |
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
@@ -119,24 +117,20 @@ jobs:
           fi
           
           echo "下載目標: $CLASH_URL"
-          # 直接下載到 files/root/ 目錄，這樣會被打包進韌體的 /root/ 底下
           wget -O files/root/luci-app-openclash.apk "$CLASH_URL"
           
-          # 建立開機自動安裝腳本
-          cat << "EOF" > files/etc/uci-defaults/99-install-openclash
-          #!/bin/sh
-          # 等待系統就緒
-          sleep 5
-          echo "正在安裝 OpenClash..."
-          # 強制安裝我們預載的 apk
-          apk add --allow-untrusted --force-overwrite /root/luci-app-openclash.apk
-          # 安裝完後刪除安裝檔以節省空間
-          rm -f /root/luci-app-openclash.apk
-          exit 0
-          EOF
-          chmod +x files/etc/uci-defaults/99-install-openclash
+          # 建立開機自動安裝腳本 (改用 echo 寫入，避免語法錯誤)
+          INSTALL_SCRIPT="files/etc/uci-defaults/99-install-openclash"
+          echo "#!/bin/sh" > "$INSTALL_SCRIPT"
+          echo "sleep 10" >> "$INSTALL_SCRIPT"
+          echo "echo '正在安裝 OpenClash...'" >> "$INSTALL_SCRIPT"
+          # 使用 --allow-untrusted 安裝無簽名包，並強制覆蓋
+          echo "apk add --allow-untrusted --force-overwrite /root/luci-app-openclash.apk" >> "$INSTALL_SCRIPT"
+          echo "rm -f /root/luci-app-openclash.apk" >> "$INSTALL_SCRIPT"
+          echo "exit 0" >> "$INSTALL_SCRIPT"
+          chmod +x "$INSTALL_SCRIPT"
           
-          echo "OpenClash 已準備就緒 (將於開機時安裝)"
+          echo "OpenClash 準備就緒"
         fi
 
     - name: Build Firmware
@@ -149,7 +143,7 @@ jobs:
         luci-app-attendedsysupgrade \
         parted losetup resize2fs lsblk"
         
-        # 2. OpenClash 的所有依賴 (我們先裝好這些，開機裝 apk 就不會報錯)
+        # 2. OpenClash 依賴 (預先安裝好，開機就能順利裝 apk)
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
             PACKAGES="$PACKAGES -dnsmasq dnsmasq-full \
             ruby ruby-yaml kmod-tun kmod-inet-diag kmod-nft-tproxy libcap libcap-bin"
@@ -166,7 +160,6 @@ jobs:
         fi
         
         echo "開始打包..."
-        # 注意：這裡不加 luci-app-openclash 到 PACKAGES，因為我們會開機後手動裝
         make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y BIN_DIR="bin/targets/x86/64"
 
     - name: Process Files
@@ -201,7 +194,7 @@ jobs:
         name: OpenWrt v${{ env.OPENWRT_VERSION }} (Auto Install)
         files: release_files/*
         body: |
-          ### OpenWrt x86_64 穩定版 (Image Builder)
+          ### OpenWrt x86_64 穩定版
           
           * **核心版本**: v${{ env.OPENWRT_VERSION }}
           * **打包日期**: ${{ env.BUILD_DATE }}
@@ -211,7 +204,7 @@ jobs:
           * **帳號**: `root` / **密碼**: `無`
           
           #### 🚀 功能：
-          * **OpenClash**: ${{ github.event.inputs.include_openclash }} (開機後自動安裝)
+          * **OpenClash**: ${{ github.event.inputs.include_openclash }} (開機自動安裝)
           * **Docker**: ${{ github.event.inputs.include_docker }}
           
           #### 💾 空間：
