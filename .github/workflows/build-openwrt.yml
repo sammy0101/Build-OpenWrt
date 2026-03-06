@@ -1,4 +1,4 @@
-name: Build OpenWrt (Image Builder Fixed)
+name: Build OpenWrt (Image Builder + OpenClash Fix)
 
 on:
   workflow_dispatch:
@@ -57,37 +57,28 @@ jobs:
         zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 qemu-utils
         sudo apt-get clean
 
-    # [關鍵修正] 改用網頁爬蟲方式抓取版本與檔名，解決 404 問題
     - name: Download Image Builder
       run: |
-        # 1. 從官方下載頁面爬取最新的穩定版本號 (排除 SNAPSHOT)
+        # 1. 爬取官方最新穩定版 (解決 404 問題)
         echo "正在偵測官方伺服器上的最新穩定版..."
         BASE_URL="https://downloads.openwrt.org/releases"
-        # 抓取目錄列表 -> 篩選版本號 -> 排序 -> 取最新
         VERSION=$(curl -s "$BASE_URL/" | grep -oE '>[0-9]+\.[0-9]+\.[0-9]+' | cut -d '>' -f 2 | sort -V | tail -n 1)
         
         echo "偵測到最新可用版本: $VERSION"
-        
-        # 2. 設定目標架構路徑
         TARGET_URL="$BASE_URL/$VERSION/targets/x86/64"
         
-        # 3. 下載校驗檔以獲取正確的 Image Builder 檔名 (解決 .xz 或 .zst 檔名問題)
+        # 2. 獲取正確檔名
         wget -O sha256sums "$TARGET_URL/sha256sums"
-        
-        # 4. 從校驗檔中找出 imagebuilder 的檔名
         IB_FILENAME=$(grep "openwrt-imagebuilder" sha256sums | grep "x86-64" | head -n 1 | awk '{print $2}' | tr -d '*')
         
         if [ -z "$IB_FILENAME" ]; then
-          echo "錯誤：無法在 sha256sums 中找到 Image Builder 檔案！"
+          echo "錯誤：無法找到 Image Builder 檔案！"
           exit 1
         fi
         
-        echo "準備下載檔案: $IB_FILENAME"
-        
-        # 5. 下載真正的 Image Builder
+        # 3. 下載並解壓
+        echo "正在下載: $IB_FILENAME"
         wget -O imagebuilder.tar.xz "$TARGET_URL/$IB_FILENAME"
-        
-        # 6. 解壓
         mkdir -p openwrt
         tar -xf imagebuilder.tar.xz --strip-components=1 -C openwrt
         
@@ -101,12 +92,20 @@ jobs:
           echo "正在處理 OpenClash APK..."
           mkdir -p packages
           
-          # 下載最新的 .apk
-          CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep "browser_download_url" | grep "luci-app-openclash" | grep ".apk" | head -n 1 | cut -d '"' -f 4)
+          # 1. 嘗試抓取最新版 APK 連結
+          CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep -oE 'https://[^"]*luci-app-openclash[^"]*\.apk' | head -n 1)
+          
+          # 2. 如果抓不到 (變數為空)，使用保底版本 (v0.47.055)
+          if [ -z "$CLASH_URL" ]; then
+            echo "⚠️ 警告：無法抓取最新版連結，切換至備用版本 v0.47.055..."
+            CLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v0.47.055/luci-app-openclash-0.47.055.apk"
+          fi
+          
+          echo "下載目標: $CLASH_URL"
           wget -P packages "$CLASH_URL"
           
-          # 嘗試建立 APK 索引 (如果 Image Builder 支援)
-          # 檢查是否有 APK 工具
+          # 3. 建立 APK 索引 (APKINDEX)
+          # 尋找 Image Builder 內建的 apk 工具
           if [ -f "staging_dir/host/bin/apk" ]; then
              APK_BIN="./staging_dir/host/bin/apk"
           else
@@ -117,13 +116,10 @@ jobs:
             echo "建立 APK 索引..."
             "$APK_BIN" mkindex -o packages/APKINDEX.tar.gz packages/*.apk
             
-            # 加入本地源
+            # 加入本地源 (使用 sed 插入到第一行)
             sed -i "1i src/custom file://$(pwd)/packages" repositories.conf
           else
-            echo "⚠️ 警告：找不到 apk 工具，這可能是一個舊版 Image Builder。"
-            echo "正在切換回 IPK 兼容模式..."
-            # 如果是舊版，我們只能嘗試用 IPK 方式 (但這需要下載 IPK 檔)
-            # 這裡為了保險，如果找不到 apk，我們假設依賴會由線上源解決，只放 apk 檔案看看
+            echo "⚠️ 嚴重警告：找不到 apk 工具，無法建立索引！OpenClash 可能無法安裝。"
           fi
         fi
 
@@ -134,13 +130,11 @@ jobs:
         sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
-        # 設定 IP
+        # 設定 IP (無中文包設定)
         mkdir -p files/etc/uci-defaults
         cat << "EOF" > files/etc/uci-defaults/99-custom-settings
         #!/bin/sh
         uci set network.lan.ipaddr='${{ github.event.inputs.router_ip }}'
-        # 嘗試設定中文，如果沒安裝語言包則此行無效但不報錯
-        uci set luci.main.lang='zh_tw'
         uci commit
         exit 0
         EOF
@@ -155,10 +149,9 @@ jobs:
         luci-app-attendedsysupgrade \
         parted losetup resize2fs lsblk"
         
-        # OpenClash (APK 依賴鏈)
+        # OpenClash (APK 模式)
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-            # 注意：如果下載的是 23.05 (opkg)，這裡可能會報錯
-            # 但既然你有 APK 連結，我們假設目標是支援 APK 的版本
+            # 明確指定 OpenClash 及其依賴
             PACKAGES="$PACKAGES luci-app-openclash \
             -dnsmasq dnsmasq-full \
             ruby ruby-yaml kmod-tun kmod-inet-diag kmod-nft-tproxy libcap libcap-bin"
@@ -175,7 +168,7 @@ jobs:
         fi
         
         echo "開始打包..."
-        # 加上 --allow-untrusted 允許安裝無簽章的 OpenClash
+        # 允許無簽章安裝
         make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y BIN_DIR="bin/targets/x86/64"
 
     - name: Process Files
@@ -184,7 +177,7 @@ jobs:
         echo "正在處理檔案..."
         mkdir -p ../../../../release_files
         
-        # 複製檔案 (Image Builder 的輸出通常是 combined-efi.img.gz)
+        # 複製檔案
         for file in *combined-efi.img.gz; do
           if [ -f "$file" ]; then
             cp "$file" "../../../../release_files/"
@@ -213,12 +206,17 @@ jobs:
         body: |
           ### OpenWrt x86_64 穩定版 (Image Builder)
           
-          * **核心版本**: ${{ env.OPENWRT_VERSION }}
+          * **核心版本**: v${{ env.OPENWRT_VERSION }}
           * **打包日期**: ${{ env.BUILD_DATE }}
           
           #### 🔐 資訊：
           * **IP**: `${{ github.event.inputs.router_ip }}`
           * **帳號**: `root` / **密碼**: `無`
+          
+          #### 🚀 功能：
+          * **OpenClash**: ${{ github.event.inputs.include_openclash }} (APK版)
+          * **Docker**: ${{ github.event.inputs.include_docker }}
+          * **常用外掛**: ${{ github.event.inputs.include_ext_apps }}
           
           #### 💾 空間：
           * **系統分區**: `${{ github.event.inputs.firmware_size }} MB`
