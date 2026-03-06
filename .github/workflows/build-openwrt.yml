@@ -1,4 +1,4 @@
-name: Build OpenWrt (APK Fix 2)
+name: Build OpenWrt (APK Index Fix)
 
 on:
   workflow_dispatch:
@@ -59,7 +59,6 @@ jobs:
 
     - name: Download Image Builder
       run: |
-        # 1. 爬取官方最新穩定版
         echo "正在偵測官方伺服器上的最新穩定版..."
         BASE_URL="https://downloads.openwrt.org/releases"
         VERSION=$(curl -s "$BASE_URL/" | grep -oE '>[0-9]+\.[0-9]+\.[0-9]+' | cut -d '>' -f 2 | sort -V | tail -n 1)
@@ -67,7 +66,6 @@ jobs:
         echo "偵測到最新可用版本: $VERSION"
         TARGET_URL="$BASE_URL/$VERSION/targets/x86/64"
         
-        # 2. 獲取正確檔名
         wget -O sha256sums "$TARGET_URL/sha256sums"
         IB_FILENAME=$(grep "openwrt-imagebuilder" sha256sums | grep "x86-64" | head -n 1 | awk '{print $2}' | tr -d '*')
         
@@ -76,7 +74,6 @@ jobs:
           exit 1
         fi
         
-        # 3. 下載並解壓
         echo "正在下載: $IB_FILENAME"
         wget -O imagebuilder.tar.xz "$TARGET_URL/$IB_FILENAME"
         mkdir -p openwrt
@@ -92,7 +89,6 @@ jobs:
           echo "正在處理 OpenClash APK..."
           mkdir -p packages
           
-          # 1. 下載 APK (加入重試機制)
           CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep -oE 'https://[^"]*luci-app-openclash[^"]*\.apk' | head -n 1)
           
           if [ -z "$CLASH_URL" ]; then
@@ -103,8 +99,7 @@ jobs:
           echo "下載目標: $CLASH_URL"
           wget -P packages "$CLASH_URL"
           
-          # 2. [關鍵修正] 建立 APK 索引
-          # 尋找 Image Builder 內建的 apk 工具
+          # 檢查是否有 APK 工具
           if [ -f "staging_dir/host/bin/apk" ]; then
              APK_BIN="./staging_dir/host/bin/apk"
           else
@@ -112,11 +107,11 @@ jobs:
           fi
           
           if [ -n "$APK_BIN" ]; then
-            echo "建立 APK 索引 (使用重定向)..."
-            # 改用標準輸出重定向，避開 -o 參數相容性問題
-            "$APK_BIN" mkindex --allow-untrusted packages/*.apk > packages/APKINDEX.tar.gz
+            echo "建立 APK 索引..."
+            # [關鍵修正] 使用 'index' 指令並重定向輸出
+            "$APK_BIN" index --allow-untrusted packages/*.apk > packages/APKINDEX.tar.gz
             
-            # 加入本地源 (插入到第一行)
+            # 加入本地源
             sed -i "1i src/custom file://$(pwd)/packages" repositories.conf
           else
             echo "⚠️ 嚴重警告：找不到 apk 工具，無法建立索引！"
@@ -149,9 +144,8 @@ jobs:
         luci-app-attendedsysupgrade \
         parted losetup resize2fs lsblk"
         
-        # OpenClash (APK 模式)
+        # OpenClash
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-            # 明確指定 OpenClash 及其依賴
             PACKAGES="$PACKAGES luci-app-openclash \
             -dnsmasq dnsmasq-full \
             ruby ruby-yaml kmod-tun kmod-inet-diag kmod-nft-tproxy libcap libcap-bin"
@@ -168,8 +162,8 @@ jobs:
         fi
         
         echo "開始打包..."
-        # 加上 --allow-untrusted 允許安裝無簽章的 OpenClash
-        make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y BIN_DIR="bin/targets/x86/64" EXTRA_IMAGE_NAME="custom"
+        # 加上 --allow-untrusted
+        make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y BIN_DIR="bin/targets/x86/64"
 
     - name: Process Files
       working-directory: ./openwrt/bin/targets/x86/64
@@ -177,7 +171,6 @@ jobs:
         echo "正在處理檔案..."
         mkdir -p ../../../../release_files
         
-        # 複製檔案
         for file in *combined-efi.img.gz; do
           if [ -f "$file" ]; then
             cp "$file" "../../../../release_files/"
@@ -201,12 +194,12 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v${{ env.OPENWRT_VERSION }}-${{ env.BUILD_DATE }}
-        name: OpenWrt v${{ env.OPENWRT_VERSION }} (ImageBuilder)
+        name: OpenWrt v${{ env.OPENWRT_VERSION }} (Image Builder)
         files: release_files/*
         body: |
-          ### OpenWrt x86_64 穩定版 (Image Builder)
+          ### OpenWrt x86_64 穩定版
           
-          * **核心版本**: v${{ env.OPENWRT_VERSION }} (官方原版核心)
+          * **核心版本**: v${{ env.OPENWRT_VERSION }}
           * **打包日期**: ${{ env.BUILD_DATE }}
           
           #### 🔐 資訊：
@@ -214,9 +207,8 @@ jobs:
           * **帳號**: `root` / **密碼**: `無`
           
           #### 🚀 功能：
-          * **OpenClash**: ${{ github.event.inputs.include_openclash }} (APK版)
+          * **OpenClash**: ${{ github.event.inputs.include_openclash }}
           * **Docker**: ${{ github.event.inputs.include_docker }}
-          * **常用外掛**: ${{ github.event.inputs.include_ext_apps }}
           
           #### 💾 空間：
           * **系統分區**: `${{ github.event.inputs.firmware_size }} MB`
