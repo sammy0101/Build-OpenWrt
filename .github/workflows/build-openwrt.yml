@@ -95,6 +95,7 @@ jobs:
         CUSTOM_SCRIPT="files/etc/uci-defaults/99-custom-settings"
         echo "#!/bin/sh" > "$CUSTOM_SCRIPT"
         echo "uci set network.lan.ipaddr='${{ github.event.inputs.router_ip }}'" >> "$CUSTOM_SCRIPT"
+        echo "uci set network.lan.netmask='255.255.255.0'" >> "$CUSTOM_SCRIPT" 
         echo "uci set luci.main.lang='zh_tw'" >> "$CUSTOM_SCRIPT"
         echo "uci commit" >> "$CUSTOM_SCRIPT"
         echo "exit 0" >> "$CUSTOM_SCRIPT"
