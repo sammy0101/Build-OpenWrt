@@ -1,236 +1,128 @@
-name: Build OpenWrt (Ultimate Stable)
+name: Build Pure OpenWrt Stable (English)
 
 on:
   workflow_dispatch:
     inputs:
-      router_ip:
-        description: '請設置路由器的管理地址'
-        required: true
+      lan_ip:
+        description: '請設置路由器的管理地址 (LAN IP)'
         default: '192.168.10.1'
-        type: string
-      firmware_size:
-        description: '請輸入韌體大小 (MB)'
         required: true
+      rootfs_size:
+        description: '請輸入韌體大小 (MB) (例如 1024 或 2048)'
         default: '2048'
-        type: string
-      include_openclash:
-        description: '是否安裝 OpenClash？'
         required: true
-        default: 'yes'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
-      include_docker:
-        description: '是否安裝 Docker？'
-        required: true
-        default: 'yes'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
-      include_ext_apps:
-        description: '是否安裝常用外掛？'
-        required: true
-        default: 'yes'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
 
-permissions:
-  contents: write
+env:
+  REPO_URL: https://github.com/openwrt/openwrt
+  TZ: Asia/Taipei
 
 jobs:
   build:
-    name: Build Firmware
     runs-on: ubuntu-22.04
-
+    
     steps:
-    - name: Checkout
+    - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Initialize Environment
-      run: |
-        sudo apt-get update
-        # 加入 zstd 以防最新版 OpenWrt 使用 zst 壓縮
-        sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
-        zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 qemu-utils zstd
-        sudo apt-get clean
-
-    - name: Download Image Builder
-      run: |
-        echo "正在偵測官方伺服器上的最新穩定版..."
-        BASE_URL="https://downloads.openwrt.org/releases"
-        VERSION=$(curl -s "$BASE_URL/" | grep -oE '>[0-9]+\.[0-9]+\.[0-9]+' | cut -d '>' -f 2 | sort -V | tail -n 1)
-        
-        echo "偵測到最新可用版本: $VERSION"
-        TARGET_URL="$BASE_URL/$VERSION/targets/x86/64"
-        
-        wget -O sha256sums "$TARGET_URL/sha256sums"
-        IB_FILENAME=$(grep "openwrt-imagebuilder" sha256sums | grep "x86-64" | head -n 1 | awk '{print $2}' | tr -d '*')
-        
-        if [ -z "$IB_FILENAME" ]; then
-          echo "錯誤：無法找到 Image Builder 檔案！"
-          exit 1
-        fi
-        
-        echo "正在下載: $IB_FILENAME"
-        wget -O imagebuilder.tar.xz "$TARGET_URL/$IB_FILENAME"
-        mkdir -p openwrt
-        tar -xf imagebuilder.tar.xz --strip-components=1 -C openwrt
-        
-        echo "OPENWRT_VERSION=$VERSION" >> $GITHUB_ENV
-        echo "BUILD_DATE=$(date +"%Y%m%d")" >> $GITHUB_ENV
-
-    - name: Configure Firmware
-      working-directory: ./openwrt
-      run: |
-        sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
-        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
-        
-        mkdir -p files/etc/uci-defaults
-        mkdir -p files/root
-        
-        CUSTOM_SCRIPT="files/etc/uci-defaults/99-custom-settings"
-        echo "#!/bin/sh" > "$CUSTOM_SCRIPT"
-        echo "uci set network.lan.ipaddr='${{ github.event.inputs.router_ip }}'" >> "$CUSTOM_SCRIPT"
-        echo "uci set network.lan.netmask='255.255.255.0'" >> "$CUSTOM_SCRIPT" 
-        echo "uci set luci.main.lang='zh_tw'" >> "$CUSTOM_SCRIPT"
-        echo "uci commit" >> "$CUSTOM_SCRIPT"
-        echo "exit 0" >> "$CUSTOM_SCRIPT"
-        chmod +x "$CUSTOM_SCRIPT"
-
-    - name: Prepare OpenClash (Offline Install)
-      working-directory: ./openwrt
-      run: |
-        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-          echo "正在下載 OpenClash APK..."
-          CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep -oE 'https://[^"]*luci-app-openclash[^"]*\.apk' | head -n 1)
-          
-          if [ -z "$CLASH_URL" ]; then
-            CLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v0.47.055/luci-app-openclash-0.47.055.apk"
-          fi
-          
-          echo "下載目標: $CLASH_URL"
-          wget -O files/root/luci-app-openclash.apk "$CLASH_URL"
-          
-          INSTALL_SCRIPT="files/etc/uci-defaults/99-install-openclash"
-          echo "#!/bin/sh" > "$INSTALL_SCRIPT"
-          echo "sleep 10" >> "$INSTALL_SCRIPT"
-          echo "echo '正在安裝 OpenClash...'" >> "$INSTALL_SCRIPT"
-          echo "apk add --allow-untrusted --force-overwrite /root/luci-app-openclash.apk" >> "$INSTALL_SCRIPT"
-          echo "rm -f /root/luci-app-openclash.apk" >> "$INSTALL_SCRIPT"
-          echo "exit 0" >> "$INSTALL_SCRIPT"
-          chmod +x "$INSTALL_SCRIPT"
-        fi
-
-    - name: Build Firmware
-      working-directory: ./openwrt
-      run: |
-        PACKAGES="base-files libc ca-bundle curl wget bash unzip gzip \
-        luci luci-ssl luci-base luci-compat \
-        luci-i18n-base-zh-tw \
-        luci-app-attendedsysupgrade \
-        parted losetup resize2fs lsblk"
-        
-        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-            PACKAGES="$PACKAGES -dnsmasq dnsmasq-full \
-            ruby ruby-yaml kmod-tun kmod-inet-diag kmod-nft-tproxy libcap libcap-bin"
-        fi
-        
-        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
-            PACKAGES="$PACKAGES docker dockerd luci-app-dockerman"
-        fi
-        
-        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
-            PACKAGES="$PACKAGES luci-app-upnp luci-app-samba4 luci-app-ttyd luci-app-wol luci-app-ddns"
-        fi
-        
-        echo "開始打包..."
-        make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y
-
-    - name: Process Files & Generate VMDK
-      run: |
-        echo "正在處理檔案..."
-        OUTPUT_DIR="${{ github.workspace }}/release_files"
-        mkdir -p "$OUTPUT_DIR"
-        
-        cd openwrt/bin/targets/x86/64/ || exit 1
-        echo "=== 列出編譯出來的檔案 ==="
-        ls -la
-        
-        # [關鍵修正] 放寬搜尋條件，確保能抓到所有的映像檔
-        cp *.img* "$OUTPUT_DIR/" 2>/dev/null || true
-        cp *buildinfo "$OUTPUT_DIR/" 2>/dev/null || true
-        cp *manifest "$OUTPUT_DIR/" 2>/dev/null || true
-        cp sha256sums "$OUTPUT_DIR/" 2>/dev/null || true
-        
-        cd "$OUTPUT_DIR"
-        
-        echo "解壓縮映像檔以準備轉換..."
-        for f in *.img.gz; do
-          if [ -f "$f" ]; then
-            echo "解壓縮: $f"
-            gunzip -k "$f"
-          fi
-        done
-        for f in *.img.zst; do
-          if [ -f "$f" ]; then
-            echo "解壓縮: $f"
-            zstd -d "$f"
-          fi
-        done
-        
-        echo "正在生成 VMDK..."
-        for img in *.img; do
-          if [ -f "$img" ]; then
-            vmdk_file="${img%.img}.vmdk"
-            echo "轉換: $img -> $vmdk_file"
-            qemu-img convert -f raw -O vmdk "$img" "$vmdk_file"
-            
-            echo "壓縮 VMDK..."
-            gzip "$vmdk_file"
-            
-            # 轉換完成後刪除 raw img (因為已有 .img.gz 保留)
-            rm -f "$img"
-          fi
-        done
-        
-        echo "=== 準備發布的最終檔案 ==="
-        ls -la
-
-    - name: Generate Release Info
-      run: |
-        DATE_STR=$(date +"%Y%m%d-%H%M")
-        # [關鍵修正] 使用 OPENWRT_VERSION，避免 Tag 錯誤導致上傳死當
-        RELEASE_NAME="OpenWrt_v${{ env.OPENWRT_VERSION }}_${DATE_STR}"
-        RELEASE_TAG="v${{ env.OPENWRT_VERSION }}_${DATE_STR}"
-        echo "RELEASE_NAME=${RELEASE_NAME}" >> $GITHUB_ENV
-        echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
-
-    - name: Upload to Releases
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ env.RELEASE_TAG }}
-        name: ${{ env.RELEASE_NAME }}
-        files: release_files/*
-        body: |
-          ### OpenWrt x86_64 穩定版 (Image Builder)
-          
-          * **核心版本**: v${{ env.OPENWRT_VERSION }}
-          * **打包日期**: ${{ env.BUILD_DATE }}
-          
-          #### 🔐 資訊：
-          * **IP**: `${{ github.event.inputs.router_ip }}`
-          * **帳號**: `root` / **密碼**: `無`
-          
-          #### 🚀 功能：
-          * **OpenClash**: `${{ github.event.inputs.include_openclash == 'yes' && '✅ 已包含 (開機自動安裝)' || '❌ 未包含' }}`
-          * **Docker**: `${{ github.event.inputs.include_docker == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
-          * **常用外掛**: `${{ github.event.inputs.include_ext_apps == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
-          
-          #### 💾 空間保證：
-          * **系統分區**: `${{ github.event.inputs.firmware_size }} MB`
+    - name: 初始化編譯環境
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+        gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: 下載源碼並切換至最新穩定版
+      run: |
+        git clone $REPO_URL openwrt
+        cd openwrt
+        # 自動搜尋最新的穩定版 Tag (格式如 v23.05.5)，排除 -rc 版本
+        LATEST_TAG=$(git tag --sort=-v:refname | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+$" | head -n 1)
+        echo "檢測到的最新穩定版本為: $LATEST_TAG"
+        git checkout $LATEST_TAG
+        echo "OPENWRT_VERSION=$LATEST_TAG" >> $GITHUB_ENV
+
+    - name: 更新並安裝 Feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: 自定義配置 (IP, 空間, LuCI, 格式)
+      run: |
+        cd openwrt
+        
+        # --- 1. 修改 LAN IP ---
+        sed -i "s/192.168.1.1/${{ github.event.inputs.lan_ip }}/g" package/base-files/files/bin/config_generate
+        
+        # --- 2. 生成基礎配置 (x86/64) ---
+        echo "CONFIG_TARGET_x86=y" > .config
+        echo "CONFIG_TARGET_x86_64=y" >> .config
+        echo "CONFIG_TARGET_x86_64_Generic=y" >> .config
+        
+        # --- 3. 設定韌體分區大小 ---
+        # 這是你輸入的空間大小 (MB)
+        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}" >> .config
+        # Kernel 分區固定 128MB 即可
+        echo "CONFIG_TARGET_KERNEL_PARTSIZE=128" >> .config
+        
+        # --- 4. 設定輸出格式 (.gz 和 .vmdk) ---
+        # 產生 .img.gz (極高壓縮率，解決檔案過大問題)
+        echo "CONFIG_TARGET_IMAGES_GZIP=y" >> .config
+        # 產生 .vmdk (虛擬機專用)
+        echo "CONFIG_VMDK_IMAGES=y" >> .config
+        # 關閉不需要的格式
+        echo "# CONFIG_ISO_IMAGES is not set" >> .config
+        echo "# CONFIG_VDI_IMAGES is not set" >> .config
+        
+        # --- 5. 啟用 LuCI (Web 介面 - 英文原版) ---
+        echo "CONFIG_PACKAGE_luci=y" >> .config
+        echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
+        # 注意：已移除 CONFIG_LUCI_LANG_zh_hant (不安裝繁體中文)
+        
+        # --- 6. 基礎工具 (方便除錯或聯網) ---
+        echo "CONFIG_PACKAGE_curl=y" >> .config
+        echo "CONFIG_PACKAGE_wget-ssl=y" >> .config
+        echo "CONFIG_PACKAGE_nano=y" >> .config
+
+        # 應用配置
+        make defconfig
+
+    - name: 下載軟體包
+      run: |
+        cd openwrt
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: 編譯固件
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 V=s
+
+    - name: 整理輸出文件
+      id: organize
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        # 刪除不需要的 metadata 和未壓縮的 bin/img
+        rm -f *.buildinfo
+        rm -f *.json
+        rm -f *.manifest
+        rm -f *-kernel.bin
+        rm -f *-rootfs.img
+        # 這裡只會剩下 .vmdk 和 .img.gz
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: 上傳固件
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success'
+      with:
+        name: OpenWrt_Pure_${{ env.OPENWRT_VERSION }}
+        path: ${{ env.FIRMWARE }}
