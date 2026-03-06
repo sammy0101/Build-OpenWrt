@@ -1,4 +1,4 @@
-name: Build OpenWrt (Clean & Stable)
+name: Build OpenWrt
 
 on:
   workflow_dispatch:
