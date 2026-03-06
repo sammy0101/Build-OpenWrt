@@ -53,7 +53,6 @@ jobs:
     - name: Initialize Environment
       run: |
         sudo apt-get update
-        # 加入 zstd 以防最新版 OpenWrt 使用 zst 壓縮
         sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
         zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 qemu-utils zstd
         sudo apt-get clean
@@ -70,7 +69,8 @@ jobs:
         wget -O sha256sums "$TARGET_URL/sha256sums"
         IB_FILENAME=$(grep "openwrt-imagebuilder" sha256sums | grep "x86-64" | head -n 1 | awk '{print $2}' | tr -d '*')
         
-        if[ -z "$IB_FILENAME" ]; then
+        # 【已修正空格】
+        if [ -z "$IB_FILENAME" ]; then
           echo "錯誤：無法找到 Image Builder 檔案！"
           exit 1
         fi
@@ -103,10 +103,12 @@ jobs:
     - name: Prepare OpenClash (Offline Install)
       working-directory: ./openwrt
       run: |
-        if[ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+        # 【已修正空格】
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
           echo "正在下載 OpenClash APK..."
           CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep -oE 'https://[^"]*luci-app-openclash[^"]*\.apk' | head -n 1)
           
+          # 【已確認有空格】
           if [ -z "$CLASH_URL" ]; then
             CLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v0.47.055/luci-app-openclash-0.47.055.apk"
           fi
@@ -133,23 +135,25 @@ jobs:
         luci-app-attendedsysupgrade \
         parted losetup resize2fs lsblk"
         
-        if[ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+        # 【已修正空格】
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
             PACKAGES="$PACKAGES -dnsmasq dnsmasq-full \
             ruby ruby-yaml kmod-tun kmod-inet-diag kmod-nft-tproxy libcap libcap-bin"
         fi
         
-        if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+        # 【已修正空格】
+        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
             PACKAGES="$PACKAGES docker dockerd luci-app-dockerman"
         fi
         
-        if[ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
+        # 【已修正空格】
+        if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
             PACKAGES="$PACKAGES luci-app-upnp luci-app-samba4 luci-app-ttyd luci-app-wol luci-app-ddns"
         fi
         
         echo "開始打包..."
         make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y BIN_DIR="bin/targets/x86/64"
 
-    # [關鍵修正] 智能掃描與處理轉換
     - name: Process Files & Generate VMDK
       run: |
         echo "正在處理檔案..."
@@ -160,7 +164,6 @@ jobs:
         echo "=== 列出編譯出來的檔案 ==="
         ls -la
         
-        # 廣泛抓取所有產生的映像檔與資訊檔
         cp *combined*.img* "$OUTPUT_DIR/" 2>/dev/null || true
         cp *buildinfo "$OUTPUT_DIR/" 2>/dev/null || true
         cp *manifest "$OUTPUT_DIR/" 2>/dev/null || true
@@ -170,13 +173,15 @@ jobs:
         
         echo "解壓縮映像檔以準備轉換..."
         for f in *.img.gz; do
-          if[ -f "$f" ]; then
+          # 【已修正空格】
+          if [ -f "$f" ]; then
             echo "解壓縮: $f"
             gunzip -k "$f"
           fi
         done
         for f in *.img.zst; do
-          if[ -f "$f" ]; then
+          # 【已修正空格】
+          if [ -f "$f" ]; then
             echo "解壓縮: $f"
             zstd -d "$f"
           fi
@@ -184,7 +189,8 @@ jobs:
         
         echo "正在生成 VMDK..."
         for img in *.img; do
-          if[ -f "$img" ]; then
+          # 【已修正空格】
+          if [ -f "$img" ]; then
             vmdk_file="${img%.img}.vmdk"
             echo "轉換: $img -> $vmdk_file"
             qemu-img convert -f raw -O vmdk "$img" "$vmdk_file"
@@ -192,7 +198,6 @@ jobs:
             echo "壓縮 VMDK..."
             gzip "$vmdk_file"
             
-            # 轉換完成後刪除 raw img (因為已有 .img.gz 保留)
             rm -f "$img"
           fi
         done
