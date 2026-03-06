@@ -1,28 +1,28 @@
-name: Build OpenWrt (Ultimate Edition)
+name: Build OpenWrt (APK Image Builder)
 
 on:
   workflow_dispatch:
     inputs:
       router_ip:
-        description: '請設置路由器的管理地址 (格式:192.168.x.1 或 10.x.x.1)'
+        description: '請設置路由器的管理地址'
         required: true
         default: '192.168.10.1'
         type: string
       firmware_size:
-        description: '請輸入要編譯的韌體大小 單位(MB)'
+        description: '請輸入韌體大小 (MB)'
         required: true
         default: '2048'
         type: string
-      include_docker:
-        description: '是否編譯 Docker 與圖形化管理套件？'
+      include_openclash:
+        description: '是否內建 OpenClash？'
         required: true
         default: 'yes'
         type: choice
         options:
           - 'yes'
           - 'no'
-      include_openclash:
-        description: '是否安裝 OpenClash (網路代理工具)？'
+      include_docker:
+        description: '是否內建 Docker？'
         required: true
         default: 'yes'
         type: choice
@@ -30,7 +30,7 @@ on:
           - 'yes'
           - 'no'
       include_ext_apps:
-        description: '是否編譯常用實用外掛 (UPnP/網路共享/網頁終端/遠端喚醒/DDNS)？'
+        description: '是否內建常用外掛 (UPnP/Samba/TTYD/WOL/DDNS)？'
         required: true
         default: 'yes'
         type: choice
@@ -43,257 +43,177 @@ permissions:
 
 jobs:
   build:
-    name: Build OpenWrt
+    name: Build Firmware
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v4
 
-    # 1. 環境初始化與硬碟清理 (為了給 OpenClash 依賴的 Rust 騰出空間)
-    - name: Free Disk Space & Swap
-      env:
-        DEBIAN_FRONTEND: noninteractive
+    - name: Initialize Environment
       run: |
-        echo "正在清理硬碟空間..."
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /usr/local/lib/android
-        sudo rm -rf /opt/ghc
-        sudo docker image prune --all --force
-        
-        echo "正在建立 8GB SWAP (確保記憶體充足)..."
-        sudo swapoff -a || true
-        sudo rm -f /swapfile
-        sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=progress
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        free -h
-        
-        echo "正在安裝編譯依賴..."
         sudo apt-get update
-        sudo apt-get -y install build-essential clang flex bison g++ gawk \
-        gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
-        python3-distutils rsync unzip zlib1g-dev file wget qemu-utils \
-        libcap-dev libelf-dev
-        sudo apt-get -y autoremove --purge
+        sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
+        zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 qemu-utils
         sudo apt-get clean
 
-    # 2. 下載源碼
-    - name: Clone Latest Stable OpenWrt
+    - name: Download Image Builder
       run: |
+        # 1. 抓取最新穩定版 (v25.xx 或最新)
         LATEST_TAG=$(git ls-remote --tags https://github.com/openwrt/openwrt.git | awk -F/ '{print $3}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
-        echo "=========================================="
-        echo "偵測到目前最新的官方穩定版為: $LATEST_TAG"
-        echo "=========================================="
-        git clone -b $LATEST_TAG --depth 1 https://github.com/openwrt/openwrt.git openwrt
-        echo "OPENWRT_TAG=$LATEST_TAG" >> $GITHUB_ENV
+        VERSION=${LATEST_TAG#v}
+        
+        echo "正在下載 OpenWrt Image Builder 版本: $VERSION ..."
+        
+        IB_URL="https://downloads.openwrt.org/releases/$VERSION/targets/x86/64/openwrt-imagebuilder-$VERSION-x86-64.Linux-x86_64.tar.xz"
+        wget -O imagebuilder.tar.xz "$IB_URL"
+        
+        tar -xf imagebuilder.tar.xz
+        mv openwrt-imagebuilder-* openwrt
+        
+        echo "OPENWRT_VERSION=$VERSION" >> $GITHUB_ENV
+        echo "BUILD_DATE=$(date +"%Y%m%d")" >> $GITHUB_ENV
 
-    # 3. 基礎設定 (IP)
-    - name: Apply Custom Settings
-      working-directory: ./openwrt
-      run: |
-        # 修改 IP
-        sed -i "s/192.168.1.1/${{ github.event.inputs.router_ip }}/g" package/base-files/files/bin/config_generate
-
-    # 4. 下載 OpenClash 源碼 (如果有勾選)
-    - name: Download OpenClash Source
+    - name: Prepare OpenClash (APK Mode)
       working-directory: ./openwrt
       run: |
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-          mkdir -p package/custom
-          git clone --depth 1 -b master https://github.com/vernesong/OpenClash.git package/custom/luci-app-openclash
+          echo "正在處理 OpenClash APK..."
+          mkdir -p packages
+          
+          # 1. 下載最新的 .apk 檔案
+          CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep "browser_download_url" | grep "luci-app-openclash" | grep ".apk" | head -n 1 | cut -d '"' -f 4)
+          echo "下載連結: $CLASH_URL"
+          wget -P packages "$CLASH_URL"
+          
+          # 2. [關鍵步驟] 建立 APK 索引 (APKINDEX)
+          # Image Builder 裡面通常包含 apk 工具，我們需要找到它
+          # 如果找不到，我們嘗試使用 staging_dir 下的
+          APK_BIN=$(find . -name apk -type f -executable | grep "host/bin/apk" | head -n 1)
+          
+          if [ -n "$APK_BIN" ]; then
+            echo "使用內建工具建立索引: $APK_BIN"
+            "$APK_BIN" mkindex -o packages/APKINDEX.tar.gz packages/*.apk
+          else
+            echo "⚠️ 警告: 找不到 Image Builder 內建的 apk 工具，嘗試略過索引步驟..."
+          fi
+          
+          # 3. 將本地 packages 加入軟體源，並標記為允許無簽章 (@custom)
+          # 取得當前路徑
+          PWD_DIR=$(pwd)
+          # 在 repositories.conf 第一行插入我們的本地源
+          sed -i "1i src/custom file://$PWD_DIR/packages" repositories.conf
+          # 或者嘗試追加
+          # echo "src/custom file://$PWD_DIR/packages" >> repositories.conf
+          
+          echo "OpenClash 準備完成"
         fi
 
-    # 5. 安裝 Feeds
-    - name: Update and install feeds
+    - name: Configure Firmware
       working-directory: ./openwrt
       run: |
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-        
-        # 確保 OpenClash 的特殊依賴有被拉進來
-        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-          ./scripts/feeds install dnsmasq-full curl bash libcap libcap-bin ruby
-        fi
-
-    # 6. 生成設定檔
-    - name: Generate Configuration
-      working-directory: ./openwrt
-      run: |
-        rm -f .config
-        touch .config
-        
-        echo "=== 寫入基礎平台設定 ==="
-        echo "CONFIG_TARGET_x86=y" >> .config
-        echo "CONFIG_TARGET_x86_64=y" >> .config
-        echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_EXT4=y" >> .config
-        echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
-        echo "CONFIG_VMDK_IMAGES=y" >> .config
-        
-        # 這裡設定 2048MB，編譯器會自動生成超大的 EXT4 完美分區
+        # 1. 設定 2GB 空間 (修改設定檔)
+        sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
-        echo "=== 寫入工具設定 ==="
-        echo "CONFIG_PACKAGE_parted=y" >> .config
-        echo "CONFIG_PACKAGE_losetup=y" >> .config
-        echo "CONFIG_PACKAGE_resize2fs=y" >> .config
-        echo "CONFIG_PACKAGE_lsblk=y" >> .config
-        
-        echo "=== 寫入 LuCI 設定 (全英文環境) ==="
-        echo "CONFIG_PACKAGE_luci=y" >> .config
-        echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
-        echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
+        # 2. 設定 IP 與中文 (uci-defaults)
+        mkdir -p files/etc/uci-defaults
+        cat << "EOF" > files/etc/uci-defaults/99-custom-settings
+        #!/bin/sh
+        uci set network.lan.ipaddr='${{ github.event.inputs.router_ip }}'
+        uci set luci.main.lang='zh_tw'
+        uci commit
+        exit 0
+        EOF
+        chmod +x files/etc/uci-defaults/99-custom-settings
 
-        # 處理 OpenClash 及其複雜的相依性衝突
+    - name: Build Firmware
+      working-directory: ./openwrt
+      run: |
+        # 基礎套件
+        PACKAGES="base-files libc ca-bundle curl wget bash unzip gzip \
+        luci luci-ssl luci-base luci-compat \
+        luci-i18n-base-zh-tw \
+        luci-app-attendedsysupgrade \
+        parted losetup resize2fs lsblk"
+        
+        # OpenClash (APK 模式)
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-          echo "=== 寫入 OpenClash 完整依賴 (解決衝突) ==="
-          
-          # 移除會打架的預設套件
-          echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
-          echo "CONFIG_PACKAGE_ip-tiny=n" >> .config
-          
-          # 加入 OpenClash 主程式
-          echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config
-          
-          # 加入所有必須的底層依賴
-          echo "CONFIG_PACKAGE_bash=y" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
-          echo "CONFIG_PACKAGE_curl=y" >> .config
-          echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
-          echo "CONFIG_PACKAGE_ip-full=y" >> .config
-          echo "CONFIG_PACKAGE_ruby=y" >> .config
-          echo "CONFIG_PACKAGE_ruby-yaml=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-inet-diag=y" >> .config
-          echo "CONFIG_PACKAGE_unzip=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-tproxy=y" >> .config
-          echo "CONFIG_PACKAGE_luci-compat=y" >> .config
-          echo "CONFIG_PACKAGE_libcap=y" >> .config
-          echo "CONFIG_PACKAGE_libcap-bin=y" >> .config
+            # APK 模式下，我們只需要指定套件名稱
+            # 依賴關係 (dnsmasq-full 等) 應該由 apk 自動解析，但為了保險我們明確指定
+            # 注意：在 APK 中，移除套件的語法可能不同，但在 Image Builder 中 -package 仍然通用
+            PACKAGES="$PACKAGES luci-app-openclash \
+            -dnsmasq dnsmasq-full \
+            ruby ruby-yaml kmod-tun kmod-inet-diag kmod-nft-tproxy libcap libcap-bin"
         fi
-
+        
+        # Docker
         if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
-          echo "=== 寫入 Docker 設定 ==="
-          echo "CONFIG_PACKAGE_docker=y" >> .config
-          echo "CONFIG_PACKAGE_dockerd=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
+            PACKAGES="$PACKAGES docker dockerd luci-app-dockerman luci-i18n-dockerman-zh-tw"
         fi
-
+        
+        # 常用外掛
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
-          echo "=== 寫入常用外掛設定 ==="
-          echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-wol=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config
+            PACKAGES="$PACKAGES luci-app-upnp luci-i18n-upnp-zh-tw \
+            luci-app-samba4 luci-i18n-samba4-zh-tw \
+            luci-app-ttyd luci-i18n-ttyd-zh-tw \
+            luci-app-wol luci-i18n-wol-zh-tw \
+            luci-app-ddns luci-i18n-ddns-zh-tw"
         fi
         
-        echo "正在生成最終設定..."
-        make defconfig
+        echo "開始打包映像檔..."
+        # 加上 --allow-untrusted 參數以允許安裝我們自己下載的未簽章 OpenClash
+        # 注意：EXTRA_IMAGE_NAME 只是方便命名，關鍵是 PACKAGES
+        make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y
 
-    # 7. 下載套件
-    - name: Download package sources
-      working-directory: ./openwrt
+    - name: Process Files
+      working-directory: ./openwrt/bin/targets/x86/64
       run: |
-        make download -j8
-
-    # 8. 編譯
-    - name: Compile the firmware
-      working-directory: ./openwrt
-      run: |
-        echo "開始編譯..."
-        make -j$(nproc) || (
-          echo "================ 編譯失敗，正在輸出錯誤日誌 ================"
-          make -j1 V=s | tail -n 100
-          exit 1
-        )
-
-    # 9. 後處理：強制擴容與轉換 VMDK
-    - name: Prepare Files & Generate VMDK
-      run: |
-        cd openwrt/bin/targets/x86/64/
+        echo "正在處理檔案..."
+        mkdir -p ../../../../release_files
         
-        echo "解壓縮映像檔..."
-        gzip -d *.gz || true
-        
-        TARGET_SIZE="${{ github.event.inputs.firmware_size }}M"
-        
-        # 只對 SquashFS 進行強制擴容，避開 EXT4 的縮水報錯
-        echo "🔥 正在處理 SquashFS 映像檔，目標大小: $TARGET_SIZE"
-        for img in *squashfs*.img; do
-          if [ -f "$img" ]; then
-            echo "正在擴容 (Expanding) $img ..."
-            qemu-img resize -f raw "$img" "$TARGET_SIZE"
+        # 複製生成的檔案
+        for file in *combined-efi.img.gz; do
+          if [ -f "$file" ]; then
+            cp "$file" "../../../../release_files/"
+            
+            # 解壓並轉換 VMDK
+            gunzip -k "$file"
+            raw_file=${file%.gz}
+            vmdk_file=${raw_file%.img}.vmdk
+            
+            echo "正在轉換 VMDK: $raw_file -> $vmdk_file"
+            qemu-img convert -f raw -O vmdk "$raw_file" "../../../../release_files/$vmdk_file"
           fi
         done
-        
-        # 轉換為 VMDK (包含 EXT4 和 SquashFS 全部都轉)
-        echo "正在生成/更新 VMDK..."
-        for img in *.img; do
-          if [ -f "$img" ]; then
-            vmdk=${img%.img}.vmdk
-            rm -f "$vmdk"
-            qemu-img convert -f raw -O vmdk "$img" "$vmdk"
-          fi
-        done
-        
-        # 整理檔案到發布目錄
-        mkdir -p release_files
-        cp *.img release_files/ 2>/dev/null || true
-        cp *.vmdk release_files/ 2>/dev/null || true
-        
-        cp config.buildinfo release_files/config_編譯功能套件清單.buildinfo 2>/dev/null || true
-        cp feeds.buildinfo release_files/feeds_外部軟體源紀錄.buildinfo 2>/dev/null || true
-        cp version.buildinfo release_files/version_內部編譯號.buildinfo 2>/dev/null || true
-        cp profiles.json release_files/profiles_硬體支援說明.json 2>/dev/null || true
-        cp sha256sums release_files/sha256sums_檔案驗證碼.txt 2>/dev/null || true
-        
-        for f in *.manifest; do
-          if [ -f "$f" ]; then
-            cp "$f" "release_files/${f%.manifest}_預裝軟體清單.manifest"
-          fi
-        done
-        
-        # 重新壓縮
+
+    - name: Compress VMDK
+      run: |
         cd release_files
-        echo "正在壓縮檔案..."
-        gzip *.img
         gzip *.vmdk
 
-    # 10. 生成版本資訊
-    - name: Generate Release Info
-      run: |
-        DATE_STR=$(date +"%Y%m%d-%H%M")
-        RELEASE_NAME="OpenWRT+${{ env.OPENWRT_TAG }}-${DATE_STR}"
-        RELEASE_TAG="${{ env.OPENWRT_TAG }}-${DATE_STR}"
-        echo "RELEASE_NAME=${RELEASE_NAME}" >> $GITHUB_ENV
-        echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
-
-    # 11. 上傳發布
-    - name: Upload firmware to GitHub Releases
+    - name: Upload to Releases
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ env.RELEASE_TAG }}
-        name: ${{ env.RELEASE_NAME }}
-        files: openwrt/bin/targets/x86/64/release_files/*
+        tag_name: v${{ env.OPENWRT_VERSION }}-${{ env.BUILD_DATE }}
+        name: OpenWrt v${{ env.OPENWRT_VERSION }} (APK Build)
+        files: release_files/*
         body: |
-          ### OpenWrt (x86_64) Ultimate Edition
+          ### OpenWrt x86_64 穩定版 (APK Image Builder)
           
-          * **版本**: ${{ env.RELEASE_NAME }}
-          * **源碼**: ${{ env.OPENWRT_TAG }} 
+          * **核心版本**: v${{ env.OPENWRT_VERSION }}
+          * **打包日期**: ${{ env.BUILD_DATE }}
           
-          #### 🔐 登入資訊：
-          * **IP**: `http://${{ github.event.inputs.router_ip }}`
+          #### 🔐 資訊：
+          * **IP**: `${{ github.event.inputs.router_ip }}`
           * **帳號**: `root` / **密碼**: `無`
           
-          #### 🚀 包含功能：
-          * **OpenClash**: `${{ github.event.inputs.include_openclash == 'yes' && '✅ 已包含 (需手動下載核心)' || '❌ 未包含' }}`
-          * **Docker**: `${{ github.event.inputs.include_docker == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
-          * **常用外掛**: `${{ github.event.inputs.include_ext_apps == 'yes' && '✅ 已包含' || '❌ 未包含' }}`
+          #### 🚀 功能：
+          * **OpenClash**: ${{ github.event.inputs.include_openclash }} (APK版)
+          * **Docker**: ${{ github.event.inputs.include_docker }}
+          * **常用外掛**: ${{ github.event.inputs.include_ext_apps }}
           
-          #### 💾 空間保證：
-          * **系統空間**: `${{ github.event.inputs.firmware_size }} MB` (所有映像檔均已物理擴充)
+          #### 💾 空間：
+          * **系統分區**: `${{ github.event.inputs.firmware_size }} MB`
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
