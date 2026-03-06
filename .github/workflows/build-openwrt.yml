@@ -1,4 +1,4 @@
-name: Build OpenWrt (Final Stable)
+name: Build OpenWrt (Path Fixed)
 
 on:
   workflow_dispatch:
@@ -93,7 +93,7 @@ jobs:
         mkdir -p files/etc/uci-defaults
         mkdir -p files/root
         
-        # 3. 設定 IP 與中文 (改用 echo 寫入，避免語法錯誤)
+        # 3. 設定 IP 與中文 (改用 echo 寫入)
         CUSTOM_SCRIPT="files/etc/uci-defaults/99-custom-settings"
         echo "#!/bin/sh" > "$CUSTOM_SCRIPT"
         echo "uci set network.lan.ipaddr='${{ github.event.inputs.router_ip }}'" >> "$CUSTOM_SCRIPT"
@@ -108,10 +108,8 @@ jobs:
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
           echo "正在下載 OpenClash APK..."
           
-          # 嘗試抓取最新版
           CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep -oE 'https://[^"]*luci-app-openclash[^"]*\.apk' | head -n 1)
           
-          # 保底機制
           if [ -z "$CLASH_URL" ]; then
             CLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v0.47.055/luci-app-openclash-0.47.055.apk"
           fi
@@ -119,18 +117,15 @@ jobs:
           echo "下載目標: $CLASH_URL"
           wget -O files/root/luci-app-openclash.apk "$CLASH_URL"
           
-          # 建立開機自動安裝腳本 (改用 echo 寫入，避免語法錯誤)
+          # 建立開機自動安裝腳本
           INSTALL_SCRIPT="files/etc/uci-defaults/99-install-openclash"
           echo "#!/bin/sh" > "$INSTALL_SCRIPT"
           echo "sleep 10" >> "$INSTALL_SCRIPT"
           echo "echo '正在安裝 OpenClash...'" >> "$INSTALL_SCRIPT"
-          # 使用 --allow-untrusted 安裝無簽名包，並強制覆蓋
           echo "apk add --allow-untrusted --force-overwrite /root/luci-app-openclash.apk" >> "$INSTALL_SCRIPT"
           echo "rm -f /root/luci-app-openclash.apk" >> "$INSTALL_SCRIPT"
           echo "exit 0" >> "$INSTALL_SCRIPT"
           chmod +x "$INSTALL_SCRIPT"
-          
-          echo "OpenClash 準備就緒"
         fi
 
     - name: Build Firmware
@@ -143,7 +138,7 @@ jobs:
         luci-app-attendedsysupgrade \
         parted losetup resize2fs lsblk"
         
-        # 2. OpenClash 依賴 (預先安裝好，開機就能順利裝 apk)
+        # 2. OpenClash 依賴
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
             PACKAGES="$PACKAGES -dnsmasq dnsmasq-full \
             ruby ruby-yaml kmod-tun kmod-inet-diag kmod-nft-tproxy libcap libcap-bin"
@@ -166,11 +161,14 @@ jobs:
       working-directory: ./openwrt/bin/targets/x86/64
       run: |
         echo "正在處理檔案..."
-        mkdir -p ../../../../release_files
+        # [關鍵修正] 使用絕對路徑建立輸出目錄
+        OUTPUT_DIR="${{ github.workspace }}/release_files"
+        mkdir -p "$OUTPUT_DIR"
         
         for file in *combined-efi.img.gz; do
           if [ -f "$file" ]; then
-            cp "$file" "../../../../release_files/"
+            # 複製原始 img.gz
+            cp "$file" "$OUTPUT_DIR/"
             
             # 解壓並轉 VMDK
             gunzip -k "$file"
@@ -178,23 +176,25 @@ jobs:
             vmdk_file=${raw_file%.img}.vmdk
             
             echo "轉換 VMDK: $raw_file -> $vmdk_file"
-            qemu-img convert -f raw -O vmdk "$raw_file" "../../../../release_files/$vmdk_file"
+            # [關鍵修正] 輸出到絕對路徑
+            qemu-img convert -f raw -O vmdk "$raw_file" "$OUTPUT_DIR/$vmdk_file"
           fi
         done
 
     - name: Compress VMDK
       run: |
-        cd release_files
+        # [關鍵修正] 切換到絕對路徑
+        cd ${{ github.workspace }}/release_files
         gzip *.vmdk
 
     - name: Upload to Releases
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v${{ env.OPENWRT_VERSION }}-${{ env.BUILD_DATE }}
-        name: OpenWrt v${{ env.OPENWRT_VERSION }} (Auto Install)
+        name: OpenWrt v${{ env.OPENWRT_VERSION }} (Stable)
         files: release_files/*
         body: |
-          ### OpenWrt x86_64 穩定版
+          ### OpenWrt x86_64 穩定版 (Image Builder)
           
           * **核心版本**: v${{ env.OPENWRT_VERSION }}
           * **打包日期**: ${{ env.BUILD_DATE }}
@@ -204,7 +204,7 @@ jobs:
           * **帳號**: `root` / **密碼**: `無`
           
           #### 🚀 功能：
-          * **OpenClash**: ${{ github.event.inputs.include_openclash }} (開機自動安裝)
+          * **OpenClash**: ${{ github.event.inputs.include_openclash }} (開機後自動安裝)
           * **Docker**: ${{ github.event.inputs.include_docker }}
           
           #### 💾 空間：
