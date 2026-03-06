@@ -1,4 +1,4 @@
-name: Build OpenWrt
+name: Build OpenWrt (Clean & Stable)
 
 on:
   workflow_dispatch:
@@ -81,22 +81,12 @@ jobs:
         git clone -b $LATEST_TAG --depth 1 https://github.com/openwrt/openwrt.git openwrt
         echo "OPENWRT_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
-    # 3. 基礎設定 (IP & 語言)
+    # 3. 基礎設定 (IP)
     - name: Apply Custom Settings
       working-directory: ./openwrt
       run: |
         # 修改 IP
         sed -i "s/192.168.1.1/${{ github.event.inputs.router_ip }}/g" package/base-files/files/bin/config_generate
-        
-        # 預設繁體中文
-        mkdir -p package/base-files/files/etc/uci-defaults
-        cat << "EOF" > package/base-files/files/etc/uci-defaults/99-default-zh-tw
-        #!/bin/sh
-        uci set luci.main.lang='zh_tw'
-        uci commit luci
-        exit 0
-        EOF
-        chmod +x package/base-files/files/etc/uci-defaults/99-default-zh-tw
 
     # 4. 安裝 Feeds
     - name: Update and install feeds
@@ -120,7 +110,7 @@ jobs:
         echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
         echo "CONFIG_VMDK_IMAGES=y" >> .config
         
-        # 這裡設定 2048MB，編譯器會自動生成超大的完美分區！
+        # 這裡設定分區大小，編譯器會自動生成對應的容量！
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
         echo "=== 寫入工具設定 ==="
@@ -129,35 +119,25 @@ jobs:
         echo "CONFIG_PACKAGE_resize2fs=y" >> .config
         echo "CONFIG_PACKAGE_lsblk=y" >> .config
         
-        echo "=== 寫入 LuCI 設定 ==="
+        echo "=== 寫入 LuCI 設定 (預設英文) ==="
         echo "CONFIG_PACKAGE_luci=y" >> .config
         echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
-        echo "CONFIG_PACKAGE_luci-i18n-base-zh-tw=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
-        echo "CONFIG_PACKAGE_luci-i18n-attendedsysupgrade-zh-tw=y" >> .config
 
-        # 這裡已經徹底檢查過，if 和 [ 之間絕對有空格
-        if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
+        if[ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
           echo "=== 寫入 Docker 設定 ==="
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_dockerd=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-tw=y" >> .config
         fi
 
-        # 這裡也徹底檢查過，有空格！
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
           echo "=== 寫入常用外掛設定 ==="
           echo "CONFIG_PACKAGE_luci-app-upnp=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-samba4-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-wol=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-wol-zh-tw=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-tw=y" >> .config
         fi
         
         echo "正在生成最終設定..."
@@ -188,7 +168,7 @@ jobs:
         echo "解壓縮映像檔..."
         gzip -d *.gz || true
         
-        # 直接轉換為 VMDK，不再做多餘的 resize 動作
+        # 直接轉換為 VMDK
         echo "正在生成/更新 VMDK..."
         for img in *.img; do
           if [ -f "$img" ]; then
@@ -238,7 +218,7 @@ jobs:
         name: ${{ env.RELEASE_NAME }}
         files: openwrt/bin/targets/x86/64/release_files/*
         body: |
-          ### OpenWrt (x86_64) 乾淨穩定版
+          ### OpenWrt (x86_64) 乾淨穩定版 (純英介面)
           
           * **版本**: ${{ env.RELEASE_NAME }}
           * **源碼**: ${{ env.OPENWRT_TAG }} 
