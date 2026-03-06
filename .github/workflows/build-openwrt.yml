@@ -1,4 +1,4 @@
-name: Build OpenWrt (APK Index Fix)
+name: Build OpenWrt (First Boot Install)
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ on:
         default: '2048'
         type: string
       include_openclash:
-        description: '是否內建 OpenClash (APK版)？'
+        description: '是否安裝 OpenClash？'
         required: true
         default: 'yes'
         type: choice
@@ -22,7 +22,7 @@ on:
           - 'yes'
           - 'no'
       include_docker:
-        description: '是否內建 Docker？'
+        description: '是否安裝 Docker？'
         required: true
         default: 'yes'
         type: choice
@@ -30,7 +30,7 @@ on:
           - 'yes'
           - 'no'
       include_ext_apps:
-        description: '是否內建常用外掛？'
+        description: '是否安裝常用外掛？'
         required: true
         default: 'yes'
         type: choice
@@ -82,87 +82,91 @@ jobs:
         echo "OPENWRT_VERSION=$VERSION" >> $GITHUB_ENV
         echo "BUILD_DATE=$(date +"%Y%m%d")" >> $GITHUB_ENV
 
-    - name: Prepare OpenClash (APK Mode)
-      working-directory: ./openwrt
-      run: |
-        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-          echo "正在處理 OpenClash APK..."
-          mkdir -p packages
-          
-          CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep -oE 'https://[^"]*luci-app-openclash[^"]*\.apk' | head -n 1)
-          
-          if [ -z "$CLASH_URL" ]; then
-            echo "⚠️ 警告：無法抓取最新版連結，切換至備用版本 v0.47.055..."
-            CLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v0.47.055/luci-app-openclash-0.47.055.apk"
-          fi
-          
-          echo "下載目標: $CLASH_URL"
-          wget -P packages "$CLASH_URL"
-          
-          # 檢查是否有 APK 工具
-          if [ -f "staging_dir/host/bin/apk" ]; then
-             APK_BIN="./staging_dir/host/bin/apk"
-          else
-             APK_BIN=$(find . -name apk -type f | head -n 1)
-          fi
-          
-          if [ -n "$APK_BIN" ]; then
-            echo "建立 APK 索引..."
-            # [關鍵修正] 使用 'index' 指令並重定向輸出
-            "$APK_BIN" index --allow-untrusted packages/*.apk > packages/APKINDEX.tar.gz
-            
-            # 加入本地源
-            sed -i "1i src/custom file://$(pwd)/packages" repositories.conf
-          else
-            echo "⚠️ 嚴重警告：找不到 apk 工具，無法建立索引！"
-          fi
-        fi
-
     - name: Configure Firmware
       working-directory: ./openwrt
       run: |
-        # 設定 2GB 空間
+        # 1. 設定 2GB 空間
         sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
-        # 設定 IP
+        # 2. 建立自定義檔案結構
         mkdir -p files/etc/uci-defaults
+        mkdir -p files/root
+        
+        # 3. 設定 IP 與中文
         cat << "EOF" > files/etc/uci-defaults/99-custom-settings
         #!/bin/sh
         uci set network.lan.ipaddr='${{ github.event.inputs.router_ip }}'
+        # 嘗試設定中文 (如果有的話)
+        uci set luci.main.lang='zh_tw'
         uci commit
         exit 0
         EOF
         chmod +x files/etc/uci-defaults/99-custom-settings
 
+    - name: Prepare OpenClash (Offline Install Mode)
+      working-directory: ./openwrt
+      run: |
+        if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
+          echo "正在下載 OpenClash APK..."
+          
+          # 嘗試抓取最新版
+          CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep -oE 'https://[^"]*luci-app-openclash[^"]*\.apk' | head -n 1)
+          
+          # 保底機制
+          if [ -z "$CLASH_URL" ]; then
+            CLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v0.47.055/luci-app-openclash-0.47.055.apk"
+          fi
+          
+          echo "下載目標: $CLASH_URL"
+          # 直接下載到 files/root/ 目錄，這樣會被打包進韌體的 /root/ 底下
+          wget -O files/root/luci-app-openclash.apk "$CLASH_URL"
+          
+          # 建立開機自動安裝腳本
+          cat << "EOF" > files/etc/uci-defaults/99-install-openclash
+          #!/bin/sh
+          # 等待系統就緒
+          sleep 5
+          echo "正在安裝 OpenClash..."
+          # 強制安裝我們預載的 apk
+          apk add --allow-untrusted --force-overwrite /root/luci-app-openclash.apk
+          # 安裝完後刪除安裝檔以節省空間
+          rm -f /root/luci-app-openclash.apk
+          exit 0
+          EOF
+          chmod +x files/etc/uci-defaults/99-install-openclash
+          
+          echo "OpenClash 已準備就緒 (將於開機時安裝)"
+        fi
+
     - name: Build Firmware
       working-directory: ./openwrt
       run: |
-        # 基礎套件
+        # 1. 基礎系統與工具
         PACKAGES="base-files libc ca-bundle curl wget bash unzip gzip \
         luci luci-ssl luci-base luci-compat \
+        luci-i18n-base-zh-tw \
         luci-app-attendedsysupgrade \
         parted losetup resize2fs lsblk"
         
-        # OpenClash
+        # 2. OpenClash 的所有依賴 (我們先裝好這些，開機裝 apk 就不會報錯)
         if [ "${{ github.event.inputs.include_openclash }}" = "yes" ]; then
-            PACKAGES="$PACKAGES luci-app-openclash \
-            -dnsmasq dnsmasq-full \
+            PACKAGES="$PACKAGES -dnsmasq dnsmasq-full \
             ruby ruby-yaml kmod-tun kmod-inet-diag kmod-nft-tproxy libcap libcap-bin"
         fi
         
-        # Docker
+        # 3. Docker
         if [ "${{ github.event.inputs.include_docker }}" = "yes" ]; then
             PACKAGES="$PACKAGES docker dockerd luci-app-dockerman"
         fi
         
-        # 常用外掛
+        # 4. 常用外掛
         if [ "${{ github.event.inputs.include_ext_apps }}" = "yes" ]; then
             PACKAGES="$PACKAGES luci-app-upnp luci-app-samba4 luci-app-ttyd luci-app-wol luci-app-ddns"
         fi
         
         echo "開始打包..."
-        # 加上 --allow-untrusted
+        # 注意：這裡不加 luci-app-openclash 到 PACKAGES，因為我們會開機後手動裝
         make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y BIN_DIR="bin/targets/x86/64"
 
     - name: Process Files
@@ -194,10 +198,10 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v${{ env.OPENWRT_VERSION }}-${{ env.BUILD_DATE }}
-        name: OpenWrt v${{ env.OPENWRT_VERSION }} (Image Builder)
+        name: OpenWrt v${{ env.OPENWRT_VERSION }} (Auto Install)
         files: release_files/*
         body: |
-          ### OpenWrt x86_64 穩定版
+          ### OpenWrt x86_64 穩定版 (Image Builder)
           
           * **核心版本**: v${{ env.OPENWRT_VERSION }}
           * **打包日期**: ${{ env.BUILD_DATE }}
@@ -207,7 +211,7 @@ jobs:
           * **帳號**: `root` / **密碼**: `無`
           
           #### 🚀 功能：
-          * **OpenClash**: ${{ github.event.inputs.include_openclash }}
+          * **OpenClash**: ${{ github.event.inputs.include_openclash }} (開機後自動安裝)
           * **Docker**: ${{ github.event.inputs.include_docker }}
           
           #### 💾 空間：
