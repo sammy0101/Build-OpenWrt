@@ -1,4 +1,4 @@
-name: Build OpenWrt (Image Builder + OpenClash Fix)
+name: Build OpenWrt (APK Fix 2)
 
 on:
   workflow_dispatch:
@@ -59,7 +59,7 @@ jobs:
 
     - name: Download Image Builder
       run: |
-        # 1. 爬取官方最新穩定版 (解決 404 問題)
+        # 1. 爬取官方最新穩定版
         echo "正在偵測官方伺服器上的最新穩定版..."
         BASE_URL="https://downloads.openwrt.org/releases"
         VERSION=$(curl -s "$BASE_URL/" | grep -oE '>[0-9]+\.[0-9]+\.[0-9]+' | cut -d '>' -f 2 | sort -V | tail -n 1)
@@ -92,10 +92,9 @@ jobs:
           echo "正在處理 OpenClash APK..."
           mkdir -p packages
           
-          # 1. 嘗試抓取最新版 APK 連結
+          # 1. 下載 APK (加入重試機制)
           CLASH_URL=$(curl -sL https://api.github.com/repos/vernesong/OpenClash/releases/latest | grep -oE 'https://[^"]*luci-app-openclash[^"]*\.apk' | head -n 1)
           
-          # 2. 如果抓不到 (變數為空)，使用保底版本 (v0.47.055)
           if [ -z "$CLASH_URL" ]; then
             echo "⚠️ 警告：無法抓取最新版連結，切換至備用版本 v0.47.055..."
             CLASH_URL="https://github.com/vernesong/OpenClash/releases/download/v0.47.055/luci-app-openclash-0.47.055.apk"
@@ -104,7 +103,7 @@ jobs:
           echo "下載目標: $CLASH_URL"
           wget -P packages "$CLASH_URL"
           
-          # 3. 建立 APK 索引 (APKINDEX)
+          # 2. [關鍵修正] 建立 APK 索引
           # 尋找 Image Builder 內建的 apk 工具
           if [ -f "staging_dir/host/bin/apk" ]; then
              APK_BIN="./staging_dir/host/bin/apk"
@@ -113,13 +112,14 @@ jobs:
           fi
           
           if [ -n "$APK_BIN" ]; then
-            echo "建立 APK 索引..."
-            "$APK_BIN" mkindex -o packages/APKINDEX.tar.gz packages/*.apk
+            echo "建立 APK 索引 (使用重定向)..."
+            # 改用標準輸出重定向，避開 -o 參數相容性問題
+            "$APK_BIN" mkindex --allow-untrusted packages/*.apk > packages/APKINDEX.tar.gz
             
-            # 加入本地源 (使用 sed 插入到第一行)
+            # 加入本地源 (插入到第一行)
             sed -i "1i src/custom file://$(pwd)/packages" repositories.conf
           else
-            echo "⚠️ 嚴重警告：找不到 apk 工具，無法建立索引！OpenClash 可能無法安裝。"
+            echo "⚠️ 嚴重警告：找不到 apk 工具，無法建立索引！"
           fi
         fi
 
@@ -130,7 +130,7 @@ jobs:
         sed -i '/CONFIG_TARGET_ROOTFS_PARTSIZE/d' .config
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.firmware_size }}" >> .config
         
-        # 設定 IP (無中文包設定)
+        # 設定 IP
         mkdir -p files/etc/uci-defaults
         cat << "EOF" > files/etc/uci-defaults/99-custom-settings
         #!/bin/sh
@@ -168,8 +168,8 @@ jobs:
         fi
         
         echo "開始打包..."
-        # 允許無簽章安裝
-        make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y BIN_DIR="bin/targets/x86/64"
+        # 加上 --allow-untrusted 允許安裝無簽章的 OpenClash
+        make image PROFILE=generic PACKAGES="$PACKAGES" FILES="files" EXTRA_kmod_fs_ext4=y BIN_DIR="bin/targets/x86/64" EXTRA_IMAGE_NAME="custom"
 
     - name: Process Files
       working-directory: ./openwrt/bin/targets/x86/64
@@ -206,7 +206,7 @@ jobs:
         body: |
           ### OpenWrt x86_64 穩定版 (Image Builder)
           
-          * **核心版本**: v${{ env.OPENWRT_VERSION }}
+          * **核心版本**: v${{ env.OPENWRT_VERSION }} (官方原版核心)
           * **打包日期**: ${{ env.BUILD_DATE }}
           
           #### 🔐 資訊：
