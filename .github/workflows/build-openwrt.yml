@@ -1,4 +1,8 @@
-name: Build Pure OpenWrt Stable (Fix VMDK)
+name: Build OpenWrt & Release
+
+# 添加寫入權限，以便上傳 Release
+permissions:
+  contents: write
 
 on:
   workflow_dispatch:
@@ -8,7 +12,7 @@ on:
         default: '192.168.10.1'
         required: true
       rootfs_size:
-        description: '請輸入韌體大小 (MB) (例如 1024 或 2048)'
+        description: '請輸入韌體大小 (MB)'
         default: '2048'
         required: true
 
@@ -24,14 +28,14 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: 初始化編譯環境 (修復依賴缺失)
+    - name: 初始化編譯環境
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         docker rmi `docker images -q` || true
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
         sudo -E apt-get -qq update
-        # 新增 qemu-utils (修復 VMDK 報錯) 和 python3-setuptools
+        # 包含 qemu-utils 用於生成 vmdk
         sudo -E apt-get -qq install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
         gettext git libncurses5-dev libssl-dev python3-distutils python3-setuptools python3-pyelftools \
         rsync unzip zlib1g-dev file wget qemu-utils
@@ -43,11 +47,12 @@ jobs:
       run: |
         git clone $REPO_URL openwrt
         cd openwrt
-        # 自動搜尋最新的穩定版 Tag (格式如 v23.05.5)，排除 -rc 版本
         LATEST_TAG=$(git tag --sort=-v:refname | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+$" | head -n 1)
         echo "檢測到的最新穩定版本為: $LATEST_TAG"
         git checkout $LATEST_TAG
         echo "OPENWRT_VERSION=$LATEST_TAG" >> $GITHUB_ENV
+        # 生成當前日期變數，用於 Release Tag
+        echo "DATE=$(date +%Y.%m.%d-%H%M)" >> $GITHUB_ENV
 
     - name: 更新並安裝 Feeds
       run: |
@@ -60,12 +65,7 @@ jobs:
         cd openwrt
         
         # --- 1. 修改 LAN IP ---
-        # 確保文件存在再修改，避免報錯
-        if [ -f package/base-files/files/bin/config_generate ]; then
-            sed -i "s/192.168.1.1/${{ github.event.inputs.lan_ip }}/g" package/base-files/files/bin/config_generate
-        else
-            echo "警告: 找不到 config_generate 文件，IP 可能未修改成功"
-        fi
+        sed -i "s/192.168.1.1/${{ inputs.lan_ip }}/g" package/base-files/files/bin/config_generate
         
         # --- 2. 生成基礎配置 (x86/64) ---
         echo "CONFIG_TARGET_x86=y" > .config
@@ -73,14 +73,13 @@ jobs:
         echo "CONFIG_TARGET_x86_64_Generic=y" >> .config
         
         # --- 3. 設定韌體分區大小 ---
-        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_size }}" >> .config
-        # 稍微加大 Kernel 分區以防萬一 (從 128 改為 256，這不會影響下載大小)
+        echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ inputs.rootfs_size }}" >> .config
         echo "CONFIG_TARGET_KERNEL_PARTSIZE=256" >> .config
         
-        # --- 4. 設定輸出格式 (.gz 和 .vmdk) ---
+        # --- 4. 設定輸出格式 ---
+        # 只開啟 gzip img，vmdk 稍後手動壓縮
         echo "CONFIG_TARGET_IMAGES_GZIP=y" >> .config
         echo "CONFIG_VMDK_IMAGES=y" >> .config
-        # 關閉不需要的格式
         echo "# CONFIG_ISO_IMAGES is not set" >> .config
         echo "# CONFIG_VDI_IMAGES is not set" >> .config
         
@@ -93,7 +92,6 @@ jobs:
         echo "CONFIG_PACKAGE_wget-ssl=y" >> .config
         echo "CONFIG_PACKAGE_nano=y" >> .config
 
-        # 應用配置
         make defconfig
 
     - name: 下載軟體包
@@ -107,28 +105,54 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        # 使用 -j$(nproc) 加速，失敗時使用 -j1 V=s 顯示詳細錯誤
         make -j$(nproc) || make -j1 V=s
 
-    - name: 整理輸出文件
+    - name: 整理文件與手動壓縮
       id: organize
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
-        # 清理不必要的文件
-        rm -f *.buildinfo
-        rm -f *.json
-        rm -f *.manifest
-        rm -f *-kernel.bin
-        rm -f *-rootfs.img
-        # 確認文件是否存在
+        
+        # 刪除不需要的雜檔
+        rm -f *.buildinfo *.json *.manifest *-kernel.bin *-rootfs.img
+        
+        # --- 關鍵步驟：手動壓縮 VMDK ---
+        # 使用 gzip -9 (最高壓縮率) 強制壓縮所有 vmdk 文件
+        echo "正在壓縮 VMDK 文件..."
+        gzip -9 *.vmdk
+        
+        # 此時資料夾內應該只剩下 .img.gz 和 .vmdk.gz
         ls -lh
+        
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 上傳固件
-      uses: actions/upload-artifact@v4
+    - name: 發布 Release
+      uses: softprops/action-gh-release@v1
       if: steps.organize.outputs.status == 'success'
       with:
-        name: OpenWrt_Pure_${{ env.OPENWRT_VERSION }}
-        path: ${{ env.FIRMWARE }}
+        # 使用 "版本號-日期" 作為 Tag，例如 v23.05.5-2023.10.20
+        tag_name: ${{ env.OPENWRT_VERSION }}-${{ env.DATE }}
+        name: OpenWrt ${{ env.OPENWRT_VERSION }} (${{ env.DATE }})
+        files: ${{ env.FIRMWARE }}/*
+        body: |
+          ### ✅ 編譯成功 / Build Success
+          
+          這是自動生成的純淨版 OpenWrt 固件。
+          This is an automatically generated pure OpenWrt firmware.
+          
+          ### 📝 固件資訊 / Firmware Info
+          
+          *   **版本 (Version):** `${{ env.OPENWRT_VERSION }}`
+          *   **管理地址 (IP):** `${{ inputs.lan_ip }}`
+          *   **預設帳號 (Account):** `root`
+          *   **預設密碼 (Password):** `無 / None`
+          *   **分區大小 (Size):** `${{ inputs.rootfs_size }} MB`
+          
+          ### 📂 檔案說明 / Files
+          
+          *   `combined-efi.img.gz`: 實體機或 PVE (UEFI) 使用。
+          *   `combined.img.gz`: 傳統 BIOS 引導使用。
+          *   `generic.vmdk.gz`: VMware / ESXi 虛擬機使用 (請解壓後掛載)。
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
