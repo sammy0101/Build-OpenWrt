@@ -1,6 +1,6 @@
 # OpenWrt Pure Stable Auto-Build (x86_64)
 
-[![Build OpenWrt & Release](https://github.com/sammy0101/Build-OpenWrt/actions/workflows/build-openwrt-pure.yml/badge.svg)](https://github.com/sammy0101/Build-OpenWrt/actions/workflows/build-openwrt-pure.yml)
+[![Build OpenWrt & Release](https://github.com/sammy0101/Build-OpenWrt/actions/workflows/build-openwrt.yml/badge.svg)](https://github.com/sammy0101/Build-OpenWrt/actions/workflows/build-openwrt.yml)
 
 這是一個基於 GitHub Actions 的自動化構建腳本，用於編譯 **OpenWrt 官方最新穩定版 (Pure Stable)** 固件。
 無需本地搭建環境，只需在網頁上點擊即可生成自定義的 x86_64 固件。
