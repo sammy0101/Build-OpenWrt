@@ -1,4 +1,4 @@
-# OpenWrt Pure Stable Auto-Build (x86_64)
+# OpenWrt Auto-Build (x86_64)
 
 [![Build OpenWrt & Release](https://github.com/sammy0101/Build-OpenWrt/actions/workflows/build-openwrt.yml/badge.svg)](https://github.com/sammy0101/Build-OpenWrt/actions/workflows/build-openwrt.yml)
 
