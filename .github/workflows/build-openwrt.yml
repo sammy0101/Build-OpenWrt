@@ -8,7 +8,7 @@ on:
     inputs:
       lan_ip:
         description: 'OpenWrt 本機管理 IP (LAN IP)'
-        default: '192.168.10.2' # 旁路由通常不佔用 .1
+        default: '192.168.10.2'
         required: true
       rootfs_size:
         description: '韌體大小 (MB)'
@@ -72,36 +72,32 @@ jobs:
       run: |
         cd openwrt
         
-        # --- 1. 修改 LAN IP (基礎) ---
-        sed -i "s/192.168.1.1/${{ inputs.lan_ip }}/g" package/base-files/files/bin/config_generate
-        
-        # --- 2. 建立 "初次開機設定腳本" (UCI Defaults) ---
-        # 這是實現「旁路由自動設定」與「線上更新支援」的關鍵
+        # --- 1. 建立 "初次開機設定腳本" (UCI Defaults) ---
         mkdir -p files/etc/uci-defaults
-        cat << 'EOF' > files/etc/uci-defaults/99-custom-setup
+        
+        # 使用 cat <<EOF 的方式寫入腳本，這樣可以直接引用 ${{ inputs.xxx }}
+        cat > files/etc/uci-defaults/99-custom-setup <<EOF
         #!/bin/sh
         
-        # 讀取環境變數 (在編譯時寫入)
-        IS_SIDE_ROUTER='${{ inputs.is_side_router }}'
-        GATEWAY_IP='${{ inputs.gateway_ip }}'
+        # 設定本機 LAN IP
+        uci set network.lan.ipaddr='${{ inputs.lan_ip }}'
+        uci set network.lan.netmask='255.255.255.0'
         
-        uci set system.@system[0].hostname='OpenWrt-Side'
+        # 設定系統時區
         uci set system.@system[0].timezone='CST-8'
         uci set system.@system[0].zonename='Asia/Taipei'
-
-        # === 旁路由邏輯 ===
-        if [ "$IS_SIDE_ROUTER" = "yes" ]; then
+        
+        # === 判斷是否為旁路由模式 ===
+        if [ "${{ inputs.is_side_router }}" = "yes" ]; then
             # 1. 設定 Gateway 和 DNS 指向主路由
-            uci set network.lan.gateway="$GATEWAY_IP"
-            uci set network.lan.dns="$GATEWAY_IP"
+            uci set network.lan.gateway='${{ inputs.gateway_ip }}'
+            uci set network.lan.dns='${{ inputs.gateway_ip }}'
             
-            # 2. 關閉 DHCP Server (旁路由不發 IP)
+            # 2. 關閉 DHCP Server (忽略介面)
             uci set dhcp.lan.ignore='1'
             
-            # 3. 防火牆設定 (允許 LAN 轉發，解決部分旁路由無法上網問題)
-            # 在防火牆 defaults 區塊啟用轉發
+            # 3. 防火牆修正 (讓旁路由可以上網與轉發)
             uci set firewall.@defaults[0].forward='ACCEPT'
-            # 確保 LAN 口有偽裝 (Masquerading)，這對單臂路由很重要
             uci set firewall.@zone[0].masq='1'
         fi
         
@@ -112,29 +108,30 @@ jobs:
         # 給予腳本執行權限
         chmod +x files/etc/uci-defaults/99-custom-setup
         
-        # --- 3. 生成基礎配置 (x86/64) ---
+        # --- 2. 生成基礎配置 (x86/64) ---
         echo "CONFIG_TARGET_x86=y" > .config
         echo "CONFIG_TARGET_x86_64=y" >> .config
         echo "CONFIG_TARGET_x86_64_Generic=y" >> .config
         
-        # --- 4. 設定韌體分區大小 ---
+        # --- 3. 設定韌體分區大小 ---
         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=${{ inputs.rootfs_size }}" >> .config
         echo "CONFIG_TARGET_KERNEL_PARTSIZE=256" >> .config
         
-        # --- 5. 設定輸出格式 ---
+        # --- 4. 設定輸出格式 ---
         echo "CONFIG_TARGET_IMAGES_GZIP=y" >> .config
         echo "CONFIG_VMDK_IMAGES=y" >> .config
         echo "# CONFIG_ISO_IMAGES is not set" >> .config
         echo "# CONFIG_VDI_IMAGES is not set" >> .config
         
-        # --- 6. 啟用 LuCI (英文原版) ---
+        # --- 5. 啟用 LuCI (英文原版) ---
         echo "CONFIG_PACKAGE_luci=y" >> .config
         echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
         
-        # --- 7. 線上更新與基礎工具 ---
-        # luci-app-attendant: 簡單的韌體更新介面
-        echo "CONFIG_PACKAGE_luci-app-attendant=y" >> .config
-        # ca-bundle & libustream: 確保 opkg 可以 HTTPS 下載
+        # --- 6. 線上更新 (Attended Sysupgrade) 與基礎工具 ---
+        # 這是官方正確的更新插件名稱
+        echo "CONFIG_PACKAGE_luci-app-attendedsysupgrade=y" >> .config
+        
+        # 必要 SSL 依賴 (讓 opkg 能下載 HTTPS 源)
         echo "CONFIG_PACKAGE_ca-bundle=y" >> .config
         echo "CONFIG_PACKAGE_libustream-openssl=y" >> .config
         echo "CONFIG_PACKAGE_curl=y" >> .config
@@ -184,12 +181,12 @@ jobs:
           *   **版本:** `${{ env.OPENWRT_VERSION }}`
           *   **模式:** `${{ inputs.is_side_router == 'yes' && '旁路由 (Side Router)' || '主路由 (Gateway)' }}`
           *   **IP 地址:** `${{ inputs.lan_ip }}`
-          *   **Gateway:** `${{ inputs.gateway_ip }}` (僅旁路由模式生效)
+          *   **Gateway:** `${{ inputs.gateway_ip }}`
           *   **帳號/密碼:** `root` / `無`
           
-          ### 🛠 特色功能
+          ### 🛠 功能說明
           
-          1.  **自動旁路由設定**: 若選擇 Yes，開機即自動關閉 DHCP 並設定 Gateway。
-          2.  **線上更新支援**: 預裝 `luci-app-attendant` 及 SSL 證書，支援 opkg 更新。
+          1.  **旁路由模式**: 若選擇 Yes，首次開機將自動設定 Gateway、DNS 並關閉 DHCP。
+          2.  **Attended Sysupgrade**: 已預裝官方升級插件，位於 `System` -> `Attended Sysupgrade`。
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
